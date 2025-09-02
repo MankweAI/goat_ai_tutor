@@ -1,4 +1,4 @@
-// api/webhook.js - ManyChat Webhook Handler for Grade 11 Maths
+// api/webhook.js - Fixed to handle message loops and prevent null responses
 // Copy this entire file to replace your current version
 
 const { getOpenAIClient } = require("../lib/config/openai");
@@ -45,7 +45,36 @@ module.exports = async (req, res) => {
     console.log(`📨 Processing for student: ${student.full_name}`);
     console.log(`💬 Message: "${student.message}"`);
 
-    // Update the welcome message portion only (lines 58-75)
+    // NEW: Detect if the message is our own welcome message or very long message
+    // This prevents message loops when users click on the bot's messages
+    const welcomeMessageStart = "Welcome to your Grade 11 Mathematics AI Tutor";
+    if (
+      student.message.includes(welcomeMessageStart) ||
+      student.message.length > 200
+    ) {
+      console.log(
+        "⚠️ Detected potential message loop - user sent our welcome message back"
+      );
+
+      return res.status(200).json({
+        echo: echo,
+        version: "v2",
+        content: {
+          messages: [
+            {
+              type: "text",
+              text: "I notice you may have clicked on my message. To get help with a specific topic, just type the topic name like 'Functions' or 'Trigonometry', or ask me a question!",
+            },
+          ],
+          quick_replies: [
+            { title: "📈 Functions", payload: "g11_math_functions" },
+            { title: "📐 Trigonometry", payload: "g11_math_trig" },
+            { title: "🔢 Algebra", payload: "g11_math_algebra" },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // Special handling for "Hi" messages - FIXED RESPONSE
     if (
@@ -79,8 +108,127 @@ I can assist with:
       });
     }
 
+    // IMPROVED: Simple keyword detection for direct topics (fast response)
+    // This handles single-word queries like "Algebra" directly without OpenAI call
+    const lowerMessage = student.message.toLowerCase().trim();
+    if (lowerMessage === "algebra") {
+      return res.status(200).json({
+        echo: echo,
+        version: "v2",
+        content: {
+          messages: [
+            {
+              type: "text",
+              text: `*Grade 11 Algebra* 🔢
+
+In Grade 11 CAPS curriculum, Algebra includes:
+
+• Exponents and surds
+• Equations and inequalities
+• Algebraic functions
+• Linear programming
+• Factorization of expressions
+• Algebraic fractions
+
+What specific algebra topic would you like help with?`,
+            },
+          ],
+          quick_replies: [
+            { title: "🔢 Exponents", payload: "g11_math_exponents" },
+            { title: "🔢 Equations", payload: "g11_math_equations" },
+            { title: "🔢 Inequalities", payload: "g11_math_inequalities" },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Add similar direct handlers for other common topics
+    if (lowerMessage === "functions") {
+      return res.status(200).json({
+        echo: echo,
+        version: "v2",
+        content: {
+          messages: [
+            {
+              type: "text",
+              text: `*Grade 11 Functions* 📈
+
+In Grade 11 CAPS curriculum, Functions includes:
+
+• Quadratic functions
+• Exponential functions
+• Logarithmic functions
+• Hyperbolic functions
+• Function interpretation
+• Average gradient
+
+What specific function type would you like to explore?`,
+            },
+          ],
+          quick_replies: [
+            { title: "📈 Quadratic", payload: "g11_math_quadratic" },
+            { title: "📈 Exponential", payload: "g11_math_exponential" },
+            { title: "📈 Logarithmic", payload: "g11_math_logarithmic" },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (lowerMessage === "trigonometry") {
+      return res.status(200).json({
+        echo: echo,
+        version: "v2",
+        content: {
+          messages: [
+            {
+              type: "text",
+              text: `*Grade 11 Trigonometry* 📐
+
+In Grade 11 CAPS curriculum, Trigonometry includes:
+
+• Trigonometric functions
+• Trigonometric identities
+• Trigonometric equations
+• Sine rule
+• Cosine rule
+• Area rule
+• 2D problems
+
+What specific trigonometry topic would you like help with?`,
+            },
+          ],
+          quick_replies: [
+            { title: "📐 Identities", payload: "g11_math_trig_identities" },
+            {
+              title: "📐 Sine & Cosine Rules",
+              payload: "g11_math_sine_cosine",
+            },
+            { title: "📐 Equations", payload: "g11_math_trig_equations" },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     // For all other messages, use the Grade 11 Maths AI Tutor
-    const tutorResponse = await getGrade11MathsTutorResponse(student);
+    let tutorResponse;
+    try {
+      tutorResponse = await getGrade11MathsTutorResponse(student);
+    } catch (error) {
+      console.error("AI Tutor error:", error);
+      // Provide a fallback response in case of AI service errors
+      tutorResponse = {
+        message:
+          "I'm having trouble processing that right now. Could you rephrase your question about Grade 11 Mathematics?",
+        quick_replies: [
+          { title: "📈 Functions", payload: "g11_math_functions" },
+          { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
+          { title: "🔢 Algebra", payload: "g11_math_algebra" },
+        ],
+      };
+    }
 
     const response = {
       echo,
@@ -96,6 +244,7 @@ I can assist with:
     return res.status(200).json(response);
   } catch (err) {
     console.error("Webhook error:", err);
+    // IMPROVED: Always return a valid response even in case of errors
     return res.status(200).json({
       echo: req.body?.echo || `error_${Date.now()}`,
       version: "v2",
@@ -103,8 +252,13 @@ I can assist with:
         messages: [
           {
             type: "text",
-            text: "Sorry, I'm having trouble processing your request right now. Please try again.",
+            text: "I'm having a momentary technical issue. Please try asking about a specific Grade 11 Mathematics topic like 'Functions' or 'Algebra'.",
           },
+        ],
+        quick_replies: [
+          { title: "📈 Functions", payload: "g11_math_functions" },
+          { title: "📐 Trigonometry", payload: "g11_math_trig" },
+          { title: "🔢 Algebra", payload: "g11_math_algebra" },
         ],
       },
       error: true,
@@ -131,7 +285,11 @@ async function getGrade11MathsTutorResponse(student) {
     // Build context for the AI with CAPS curriculum knowledge
     const topicsContext = mathsTopics.join(", ");
 
-    // Update the AI prompt in getGrade11MathsTutorResponse (same as above)
+    // Truncate very long messages to prevent issues
+    const truncatedMessage =
+      student.message.length > 500
+        ? student.message.substring(0, 500) + "..."
+        : student.message;
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
@@ -150,7 +308,7 @@ YOUR EXPERTISE:
 
 STUDENT INFO:
 - Name: ${student.first_name}
-- Message: "${student.message}"
+- Message: "${truncatedMessage}"
 
 FORMATTING GUIDELINES:
 - Use WhatsApp-friendly formatting with line breaks for readability
@@ -183,54 +341,56 @@ Respond as a knowledgeable, helpful Grade 11 Mathematics tutor would.`,
         },
         {
           role: "user",
-          content: student.message,
+          content: truncatedMessage,
         },
       ],
+      // Add timeout to prevent hanging
+      timeout: 15000,
     });
 
     const aiResponse = completion.choices[0].message.content;
 
     // Determine appropriate quick replies based on message context
     let quickReplies = [];
-
-    // Check for topic mentions to provide relevant quick replies
     const lowerMessage = student.message.toLowerCase();
 
-
-if (lowerMessage.includes("function")) {
-  quickReplies = [
-    { title: "📈 Quadratic Functions", payload: "g11_math_quadratic" },
-    { title: "📈 Exponential Functions", payload: "g11_math_exponential" },
-    { title: "📈 Function Examples", payload: "g11_math_function_examples" },
-  ];
-} else if (lowerMessage.includes("trig")) {
-  quickReplies = [
-    { title: "📐 Trig Identities", payload: "g11_math_trig_identities" },
-    { title: "📐 Sine & Cosine Rules", payload: "g11_math_sine_cosine" },
-    { title: "📐 Trig Examples", payload: "g11_math_trig_examples" },
-  ];
-} else if (
-  lowerMessage.includes("algebra") ||
-  lowerMessage.includes("equation")
-) {
-  quickReplies = [
-    { title: "🔢 Exponents", payload: "g11_math_exponents" },
-    { title: "🔢 Solve Equations", payload: "g11_math_equations" },
-    { title: "🔢 Practice Problems", payload: "g11_math_algebra_practice" },
-  ];
-} else if (lowerMessage.includes("exam") || lowerMessage.includes("test")) {
-  quickReplies = [
-    { title: "📝 Practice Test", payload: "g11_math_practice_test" },
-    { title: "📝 Exam Tips", payload: "g11_math_exam_tips" },
-    { title: "📝 Common Mistakes", payload: "g11_math_common_mistakes" },
-  ];
-} else {
-  quickReplies = [
-    { title: "📈 Functions", payload: "g11_math_functions" },
-    { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
-    { title: "🔢 Algebra", payload: "g11_math_algebra" },
-  ];
-}
+    if (lowerMessage.includes("function")) {
+      quickReplies = [
+        { title: "📈 Quadratic Functions", payload: "g11_math_quadratic" },
+        { title: "📈 Exponential Functions", payload: "g11_math_exponential" },
+        {
+          title: "📈 Function Examples",
+          payload: "g11_math_function_examples",
+        },
+      ];
+    } else if (lowerMessage.includes("trig")) {
+      quickReplies = [
+        { title: "📐 Trig Identities", payload: "g11_math_trig_identities" },
+        { title: "📐 Sine & Cosine Rules", payload: "g11_math_sine_cosine" },
+        { title: "📐 Trig Examples", payload: "g11_math_trig_examples" },
+      ];
+    } else if (
+      lowerMessage.includes("algebra") ||
+      lowerMessage.includes("equation")
+    ) {
+      quickReplies = [
+        { title: "🔢 Exponents", payload: "g11_math_exponents" },
+        { title: "🔢 Solve Equations", payload: "g11_math_equations" },
+        { title: "🔢 Practice Problems", payload: "g11_math_algebra_practice" },
+      ];
+    } else if (lowerMessage.includes("exam") || lowerMessage.includes("test")) {
+      quickReplies = [
+        { title: "📝 Practice Test", payload: "g11_math_practice_test" },
+        { title: "📝 Exam Tips", payload: "g11_math_exam_tips" },
+        { title: "📝 Common Mistakes", payload: "g11_math_common_mistakes" },
+      ];
+    } else {
+      quickReplies = [
+        { title: "📈 Functions", payload: "g11_math_functions" },
+        { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
+        { title: "🔢 Algebra", payload: "g11_math_algebra" },
+      ];
+    }
 
     return {
       message: aiResponse,
@@ -238,12 +398,13 @@ if (lowerMessage.includes("function")) {
     };
   } catch (error) {
     console.error("❌ Grade 11 Maths Tutor error:", error);
+    // Improved error response with more helpful message
     return {
-      message: `I'm having a technical issue right now. Can you please rephrase your Grade 11 Mathematics question?`,
+      message: `I'm having a brief technical issue. Let's try again with a specific Grade 11 Mathematics question or topic you'd like to learn about.`,
       quick_replies: [
-        { title: "Functions Help", payload: "g11_math_functions" },
-        { title: "Trigonometry Help", payload: "g11_math_trigonometry" },
-        { title: "Show Topics", payload: "g11_math_topics" },
+        { title: "📈 Functions", payload: "g11_math_functions" },
+        { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
+        { title: "🔢 Algebra", payload: "g11_math_algebra" },
       ],
     };
   }
