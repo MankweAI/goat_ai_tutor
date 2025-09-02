@@ -1,9 +1,9 @@
 // api/brain.js
-// AI Agent Manager - The Brain of the System
-// COPY THIS ENTIRE FILE
+// AI BRAIN - Agent Manager for WhatsApp AI Tutor
+// Copy this entire file exactly as shown
 
-const handler = async (req, res) => {
-  // Set CORS headers
+module.exports = async (req, res) => {
+  // Enable CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -15,7 +15,7 @@ const handler = async (req, res) => {
   if (req.method === "GET") {
     return res.status(200).json({
       endpoint: "AI Brain - Agent Manager",
-      status: "✅ Working perfectly!",
+      status: "✅ Brain is working perfectly!",
       description: "AI Agent Manager for CAPS curriculum WhatsApp tutoring",
       developer: "tasimaditheto",
       actions: ["test", "analyze", "conversation", "experience"],
@@ -43,9 +43,10 @@ const handler = async (req, res) => {
           message_received: message,
           user_name: user_name,
           brain_response: `Hello ${user_name}! 🧠 AI Brain is working perfectly! Ready to route you to the best educational agent.`,
+          timestamp: new Date().toISOString(),
         };
       } else if (action === "analyze") {
-        // Simple message analysis
+        // Analyze student message
         const intent = analyzeMessage(message);
         const recommendedAgent = determineAgent(intent);
 
@@ -98,6 +99,7 @@ const handler = async (req, res) => {
       } else {
         response = {
           unknown_action: action,
+          available_actions: ["test", "analyze", "conversation", "experience"],
           default_response: `Hi ${user_name}! I received your message: "${message}". Please use a valid action.`,
         };
       }
@@ -115,6 +117,7 @@ const handler = async (req, res) => {
         error: "Brain processing failed",
         details: error.message,
         note: "AI Brain system encountered an error",
+        timestamp: new Date().toISOString(),
       });
     }
   }
@@ -122,7 +125,7 @@ const handler = async (req, res) => {
   return res.status(405).json({ error: "Method not allowed" });
 };
 
-// Helper functions for AI analysis
+// Helper Functions for AI Analysis
 function analyzeMessage(message) {
   const lowerMessage = message.toLowerCase();
 
@@ -255,6 +258,3 @@ function simulateWhatsAppConversation(studentName, scenario) {
 
   return conversations[scenario] || conversations["homework_help"];
 }
-
-module.exports = handler;
-module.exports.default = handler;

@@ -7,16 +7,15 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "build": "echo 'Vercel API structure - no build needed'",
-    "vercel-build": "echo 'Serverless functions ready'"
+    "build": "echo 'Serverless functions ready'",
+    "vercel-build": "echo 'Build complete'"
   },
   "keywords": [
     "whatsapp",
     "ai-tutor",
     "caps-curriculum",
     "ai-agents",
-    "edtech",
-    "south-africa"
+    "edtech"
   ],
   "author": "tasimaditheto",
   "license": "MIT",
@@ -28,6 +27,6 @@
     "openai": "^4.26.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   }
 }

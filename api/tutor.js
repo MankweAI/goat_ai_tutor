@@ -1,9 +1,9 @@
 // api/tutor.js
-// Educational Agents - Homework, Practice, Papers
-// COPY THIS ENTIRE FILE
+// EDUCATIONAL AGENTS - Homework, Practice, Papers
+// Copy this entire file exactly as shown
 
-const handler = async (req, res) => {
-  // Set CORS headers
+module.exports = async (req, res) => {
+  // Enable CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -24,7 +24,7 @@ const handler = async (req, res) => {
         profile: "Student learning profile manager",
       },
       example:
-        'POST { "agent": "homework", "user_name": "Sarah", "homework_question": "Solve x² + 5x + 6 = 0" }',
+        'POST { "agent": "homework", "user_name": "Sarah", "homework_question": "Solve x + 5 = 10" }',
     });
   }
 
@@ -45,7 +45,7 @@ const handler = async (req, res) => {
       let response;
 
       if (agent === "homework") {
-        response = await handleHomeworkAgent({
+        response = handleHomeworkAgent({
           user_name,
           homework_question,
           subject,
@@ -54,20 +54,20 @@ const handler = async (req, res) => {
           message,
         });
       } else if (agent === "practice") {
-        response = await handlePracticeAgent({
+        response = handlePracticeAgent({
           user_name,
           subject,
           grade,
           topic,
         });
       } else if (agent === "papers") {
-        response = await handlePastPapersAgent({
+        response = handlePastPapersAgent({
           user_name,
           subject,
           grade,
         });
       } else if (agent === "profile") {
-        response = await handleProfileAgent({
+        response = handleProfileAgent({
           user_name,
           grade,
           subject,
@@ -76,6 +76,8 @@ const handler = async (req, res) => {
         response = {
           error: "Unknown agent",
           available_agents: ["homework", "practice", "papers", "profile"],
+          example:
+            'Use: { "agent": "homework", "user_name": "Sarah", "homework_question": "Help with math" }',
         };
       }
 
@@ -92,6 +94,7 @@ const handler = async (req, res) => {
         error: "Tutor processing failed",
         agent: req.body.agent || "unknown",
         details: error.message,
+        timestamp: new Date().toISOString(),
       });
     }
   }
@@ -99,8 +102,8 @@ const handler = async (req, res) => {
   return res.status(405).json({ error: "Method not allowed" });
 };
 
-// Homework Agent Handler
-async function handleHomeworkAgent(data) {
+// HOMEWORK AGENT HANDLER
+function handleHomeworkAgent(data) {
   const { user_name, homework_question, subject, grade, topic, message } = data;
 
   const question = homework_question || message || "No question provided";
@@ -131,8 +134,8 @@ async function handleHomeworkAgent(data) {
   };
 }
 
-// Practice Agent Handler
-async function handlePracticeAgent(data) {
+// PRACTICE AGENT HANDLER
+function handlePracticeAgent(data) {
   const { user_name, subject, grade, topic } = data;
 
   const practiceQuestions = generatePracticeQuestions(
@@ -167,8 +170,8 @@ async function handlePracticeAgent(data) {
   };
 }
 
-// Past Papers Agent Handler
-async function handlePastPapersAgent(data) {
+// PAST PAPERS AGENT HANDLER
+function handlePastPapersAgent(data) {
   const { user_name, subject, grade } = data;
 
   const pastPapers = generatePastPapersInfo(subject, grade);
@@ -197,8 +200,8 @@ async function handlePastPapersAgent(data) {
   };
 }
 
-// Profile Agent Handler
-async function handleProfileAgent(data) {
+// PROFILE AGENT HANDLER
+function handleProfileAgent(data) {
   const { user_name, grade, subject } = data;
 
   return {
@@ -226,7 +229,7 @@ async function handleProfileAgent(data) {
   };
 }
 
-// Helper functions
+// HELPER FUNCTIONS
 function analyzeHomeworkProblem(question, subject, grade) {
   const lowerQuestion = question.toLowerCase();
 
@@ -441,6 +444,3 @@ function generatePastPapersInfo(subject, grade) {
     ],
   };
 }
-
-module.exports = handler;
-module.exports.default = handler;

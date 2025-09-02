@@ -1,28 +1,9 @@
 // api/index.js
-// Main entry point for Vercel serverless deployment
-// COPY THIS ENTIRE FILE
+// MAIN ENTRY POINT - WhatsApp AI Tutor
+// Copy this entire file exactly as shown
 
-const express = require("express");
-const cors = require("cors");
-
-// Create express app
-const app = express();
-
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-
-// Environment variables check
-const hasOpenAI = !!process.env.OPENAI_API_KEY;
-const hasSupabase = !!(
-  process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
-);
-const hasWhatsApp = !!process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
-
-// Main route handler
-const handler = async (req, res) => {
-  // Set CORS headers
+module.exports = async (req, res) => {
+  // Enable CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -31,10 +12,16 @@ const handler = async (req, res) => {
     return res.status(200).end();
   }
 
-  // Main response
+  // Environment check
+  const hasOpenAI = !!process.env.OPENAI_API_KEY;
+  const hasSupabase = !!(
+    process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
+  );
+  const hasWhatsApp = !!process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+
   return res.status(200).json({
     project: "WhatsApp AI Tutor - CAPS Curriculum Aligned",
-    message: "AI Agents First EdTech Platform - Successfully Deployed!",
+    message: "🎉 SUCCESSFULLY DEPLOYED ON VERCEL!",
     status: "✅ LIVE AND WORKING!",
     developer: "tasimaditheto",
     deployment_time: new Date().toISOString(),
@@ -43,7 +30,7 @@ const handler = async (req, res) => {
       approach: "AI Agents First",
       curriculum: "South African CAPS Aligned",
       platform: "WhatsApp Native Conversations",
-      deployment: "Vercel Serverless",
+      deployment: "Vercel Serverless Functions",
     },
 
     environment_status: {
@@ -54,11 +41,10 @@ const handler = async (req, res) => {
     },
 
     available_endpoints: {
-      home: "/ - This page",
+      home: "/api/ - This page",
       brain: "/api/brain - AI Agent Manager",
       tutor: "/api/tutor - Educational Agents",
       system: "/api/system - System Functions",
-      env_check: "/api/env-check - Environment Check",
     },
 
     ai_agents_system: {
@@ -81,9 +67,8 @@ const handler = async (req, res) => {
     quick_tests: {
       brain_test: 'POST /api/brain { "action": "test", "message": "Hello" }',
       homework_help:
-        'POST /api/tutor { "agent": "homework", "user_name": "Sarah", "homework_question": "Solve x² + 5x + 6 = 0" }',
+        'POST /api/tutor { "agent": "homework", "user_name": "Sarah", "homework_question": "Solve x + 5 = 10" }',
       system_health: "GET /api/system?action=health",
-      env_check: "GET /api/env-check",
     },
 
     market_opportunity: {
@@ -103,7 +88,3 @@ const handler = async (req, res) => {
     ],
   });
 };
-
-// Export for Vercel
-module.exports = handler;
-module.exports.default = handler;
