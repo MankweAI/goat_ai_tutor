@@ -1,7 +1,8 @@
 // api/webhook.js
-// Enhanced WhatsApp webhook handler with message processing
+// FIXED ManyChat webhook handler with proper echo support
+// Copy this entire file exactly as shown
 
-const handler = async (req, res) => {
+module.exports = async (req, res) => {
   // Set CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -14,12 +15,12 @@ const handler = async (req, res) => {
 
   try {
     if (req.method === "GET") {
-      // Webhook verification for ManyChat/WhatsApp
+      // Webhook verification for WhatsApp Business API
       const mode = req.query["hub.mode"];
       const token = req.query["hub.verify_token"];
       const challenge = req.query["hub.challenge"];
 
-      const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
+      const VERIFY_TOKEN = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
 
       console.log("🔍 Webhook verification attempt:", {
         mode,
@@ -35,42 +36,73 @@ const handler = async (req, res) => {
           console.log("❌ Webhook verification failed - invalid token");
           return res.status(403).json({
             error: "Forbidden - Invalid verify token",
-            expected_token: "Check your WEBHOOK_VERIFY_TOKEN in .env.local",
           });
         }
       }
 
       return res.status(400).json({
         error: "Bad Request",
-        message:
-          "Missing required parameters: hub.mode, hub.verify_token, hub.challenge",
+        message: "Missing required parameters for verification",
       });
     }
 
     if (req.method === "POST") {
-      // Handle incoming webhook data from WhatsApp/ManyChat
+      // Handle ManyChat webhook data
       const webhookData = req.body;
 
       console.log(
-        "📨 Received webhook data:",
+        "📨 Received ManyChat webhook:",
         JSON.stringify(webhookData, null, 2)
       );
 
-      // Process the incoming message
-      const processedMessage = await processIncomingMessage(webhookData);
+      // CRITICAL: Extract echo from ManyChat request
+      const echo = webhookData.echo || null;
 
-      // Log the interaction
-      await logWebhookInteraction(webhookData, processedMessage);
+      if (!echo) {
+        console.warn("⚠️ No echo field found in ManyChat webhook");
+      }
 
-      return res.status(200).json({
-        status: "received",
-        message: "Webhook data processed successfully",
-        timestamp: new Date().toISOString(),
-        processed_data: processedMessage,
-      });
+      // Process the student message
+      const processedMessage = await processManyMessageChat(webhookData);
+
+      // Generate AI agent response
+      const aiResponse = await generateAIResponse(processedMessage);
+
+      // CRITICAL: Return response with echo for ManyChat
+      const manyChatResponse = {
+        // Echo back the original echo value - REQUIRED for ManyChat
+        echo: echo,
+
+        // Student response data
+        version: "v2",
+        content: {
+          messages: [
+            {
+              type: "text",
+              text: aiResponse.message_text,
+            },
+          ],
+          actions: aiResponse.actions || [],
+          quick_replies: aiResponse.quick_replies || [],
+        },
+
+        // Debug info (will be ignored by ManyChat)
+        debug_info: {
+          timestamp: new Date().toISOString(),
+          student_info: processedMessage.student_info,
+          ai_agent_used: aiResponse.agent,
+          caps_aligned: true,
+        },
+      };
+
+      console.log(
+        "📤 Sending ManyChat response:",
+        JSON.stringify(manyChatResponse, null, 2)
+      );
+
+      return res.status(200).json(manyChatResponse);
     }
 
-    // Method not allowed
     return res.status(405).json({
       error: "Method not allowed",
       message: "Only GET and POST methods are supported",
@@ -78,326 +110,276 @@ const handler = async (req, res) => {
   } catch (error) {
     console.error("❌ Webhook error:", error);
 
-    return res.status(500).json({
-      error: "Internal server error",
-      message: "Failed to process webhook request",
+    // Even on error, return echo if available
+    const echo = req.body?.echo || null;
+
+    return res.status(200).json({
+      echo: echo,
+      version: "v2",
+      content: {
+        messages: [
+          {
+            type: "text",
+            text: "I'm sorry, I'm having trouble right now. Please try again in a moment. 🤖",
+          },
+        ],
+      },
+      error_logged: true,
       timestamp: new Date().toISOString(),
-      details: error.message,
     });
   }
 };
 
-// Process incoming WhatsApp messages
-async function processIncomingMessage(webhookData) {
+// Process ManyChat incoming message
+async function processManyMessageChat(webhookData) {
   try {
-    console.log("🔄 Processing incoming message...");
+    console.log("🔄 Processing ManyChat message...");
 
-    // Extract message information from webhook data
-    const messageInfo = extractMessageInfo(webhookData);
+    // Extract student information from ManyChat webhook
+    const studentInfo = {
+      subscriber_id: webhookData.subscriber_id || "unknown",
+      first_name: webhookData.first_name || "Student",
+      last_name: webhookData.last_name || "",
+      full_name: `${webhookData.first_name || "Student"} ${
+        webhookData.last_name || ""
+      }`.trim(),
+      phone: webhookData.phone || null,
+      user_message:
+        webhookData.text || webhookData.last_input_text || "No message",
+      user_id: webhookData.subscriber_id || `temp_${Date.now()}`,
+    };
 
-    if (!messageInfo) {
-      console.log("⚠️ No message info found in webhook data");
-      return {
-        status: "no_message",
-        reason: "No message content found in webhook data",
-      };
-    }
-
-    console.log("📝 Extracted message info:", messageInfo);
-
-    // Store user interaction in database
-    await storeUserInteraction(messageInfo);
-
-    // Generate response based on message content
-    const response = await generateResponse(messageInfo);
-
-    // Send response back to user (placeholder for now)
-    console.log("📤 Generated response:", response);
+    console.log("👤 Student info extracted:", studentInfo);
 
     return {
-      status: "processed",
-      user_message: messageInfo,
-      bot_response: response,
+      platform: "manychat",
+      student_info: studentInfo,
+      message_text: studentInfo.user_message,
       timestamp: new Date().toISOString(),
+      echo: webhookData.echo,
     };
   } catch (error) {
-    console.error("❌ Error processing message:", error);
+    console.error("❌ Error processing ManyChat message:", error);
     return {
-      status: "error",
-      error: error.message,
+      platform: "manychat",
+      student_info: {
+        full_name: "Student",
+        user_message: "Error processing message",
+      },
+      message_text: "Error processing message",
       timestamp: new Date().toISOString(),
+      echo: webhookData?.echo || null,
+      error: error.message,
     };
   }
 }
 
-// Extract message information from webhook data
-function extractMessageInfo(webhookData) {
+// Generate AI agent response
+async function generateAIResponse(processedMessage) {
   try {
-    // Handle different webhook formats from ManyChat/WhatsApp
-    let messageInfo = null;
+    const { student_info, message_text } = processedMessage;
+    const studentName = student_info.first_name || "Student";
 
-    // ManyChat format
-    if (webhookData.subscriber_id && webhookData.text) {
-      messageInfo = {
-        user_id: webhookData.subscriber_id,
-        whatsapp_id: webhookData.subscriber_id,
-        message_text: webhookData.text,
-        message_type: "text",
-        user_name: webhookData.first_name || "User",
-        platform: "manychat",
+    console.log(`🧠 Generating AI response for: "${message_text}"`);
+
+    // Analyze student intent using your AI Brain
+    const intent = analyzeStudentIntent(message_text);
+
+    // Route to appropriate agent
+    const agentResponse = routeToAgent(intent, studentName, message_text);
+
+    console.log(`🎓 Agent response generated:`, agentResponse);
+
+    return agentResponse;
+  } catch (error) {
+    console.error("❌ Error generating AI response:", error);
+    return {
+      agent: "error_handler",
+      message_text: `Hi! I'm your CAPS curriculum AI tutor. I can help with homework, practice questions, and exam prep. What would you like help with? 📚`,
+      actions: [],
+      quick_replies: [
+        { title: "📚 Homework Help", payload: "homework_help" },
+        { title: "📝 Practice Questions", payload: "practice_questions" },
+        { title: "📄 Past Papers", payload: "past_papers" },
+      ],
+    };
+  }
+}
+
+// Analyze student intent (simplified version)
+function analyzeStudentIntent(message) {
+  const lowerMessage = message.toLowerCase();
+
+  // Greeting detection
+  if (
+    lowerMessage.includes("hi") ||
+    lowerMessage.includes("hello") ||
+    lowerMessage.includes("hey") ||
+    lowerMessage.includes("start")
+  ) {
+    return {
+      category: "greeting",
+      confidence: 0.9,
+      agent: "conversation_manager",
+    };
+  }
+
+  // Homework help detection
+  if (
+    lowerMessage.includes("homework") ||
+    lowerMessage.includes("help") ||
+    lowerMessage.includes("solve") ||
+    lowerMessage.includes("explain")
+  ) {
+    return {
+      category: "homework_help",
+      confidence: 0.9,
+      agent: "homework",
+    };
+  }
+
+  // Practice questions detection
+  if (
+    lowerMessage.includes("practice") ||
+    lowerMessage.includes("questions") ||
+    lowerMessage.includes("quiz") ||
+    lowerMessage.includes("test")
+  ) {
+    return {
+      category: "practice_questions",
+      confidence: 0.8,
+      agent: "practice",
+    };
+  }
+
+  // Past papers detection
+  if (
+    lowerMessage.includes("past") ||
+    lowerMessage.includes("papers") ||
+    lowerMessage.includes("exam") ||
+    lowerMessage.includes("previous")
+  ) {
+    return {
+      category: "past_papers",
+      confidence: 0.8,
+      agent: "papers",
+    };
+  }
+
+  // Subject detection
+  let subject = "unknown";
+  if (lowerMessage.includes("math")) subject = "Mathematics";
+  if (lowerMessage.includes("science")) subject = "Physical Science";
+  if (lowerMessage.includes("english")) subject = "English";
+
+  // Grade detection
+  let grade = "unknown";
+  const gradeMatch = lowerMessage.match(/grade (\d+)/);
+  if (gradeMatch) grade = gradeMatch[1];
+
+  return {
+    category: "general_query",
+    confidence: 0.6,
+    agent: "conversation_manager",
+    subject: subject,
+    grade: grade,
+  };
+}
+
+// Route to appropriate agent
+function routeToAgent(intent, studentName, message) {
+  console.log(
+    `🔀 Routing to agent: ${intent.agent} for intent: ${intent.category}`
+  );
+
+  switch (intent.agent) {
+    case "homework":
+      return {
+        agent: "homework",
+        message_text: `Great! I can help with your homework, ${studentName}! 📚\n\nTo provide the best step-by-step guidance, please share:\n• Your specific homework question\n• Subject (Math, Science, etc.)\n• Grade level\n\nI'll break it down clearly for you!`,
+        actions: [
+          {
+            action: "set_field",
+            field_name: "current_agent",
+            value: "homework",
+          },
+        ],
+        quick_replies: [
+          { title: "📐 Mathematics", payload: "subject_mathematics" },
+          { title: "🔬 Physical Science", payload: "subject_science" },
+          { title: "📖 English", payload: "subject_english" },
+        ],
       };
-    }
 
-    // WhatsApp Business API format
-    else if (
-      webhookData.entry &&
-      webhookData.entry[0] &&
-      webhookData.entry[0].changes
-    ) {
-      const change = webhookData.entry[0].changes[0];
-      if (change.value && change.value.messages && change.value.messages[0]) {
-        const message = change.value.messages[0];
-        const contact = change.value.contacts ? change.value.contacts[0] : {};
+    case "practice":
+      return {
+        agent: "practice",
+        message_text: `Excellent! I'll create practice questions for you, ${studentName}! 📝\n\nPlease tell me:\n• Subject you want to practice\n• Your grade level\n• Specific topic (optional)\n\nI'll generate CAPS-aligned questions!`,
+        actions: [
+          {
+            action: "set_field",
+            field_name: "current_agent",
+            value: "practice",
+          },
+        ],
+        quick_replies: [
+          { title: "Grade 8-9", payload: "grade_8_9" },
+          { title: "Grade 10-11", payload: "grade_10_11" },
+          { title: "Grade 12", payload: "grade_12" },
+        ],
+      };
 
-        messageInfo = {
-          user_id: message.from,
-          whatsapp_id: message.from,
-          message_text: message.text ? message.text.body : "",
-          message_type: message.type || "text",
-          user_name: contact.profile ? contact.profile.name : "User",
-          platform: "whatsapp",
+    case "papers":
+      return {
+        agent: "papers",
+        message_text: `Perfect! I can help you with past exam papers, ${studentName}! 📄\n\nTell me your grade and subject, for example:\n• "Grade 12 Mathematics"\n• "Grade 11 Physical Science"\n\nI'll provide past papers and memorandums!`,
+        actions: [
+          {
+            action: "set_field",
+            field_name: "current_agent",
+            value: "papers",
+          },
+        ],
+        quick_replies: [
+          { title: "📐 Math Papers", payload: "papers_mathematics" },
+          { title: "🔬 Science Papers", payload: "papers_science" },
+          { title: "📖 English Papers", payload: "papers_english" },
+        ],
+      };
+
+    case "conversation_manager":
+    default:
+      if (intent.category === "greeting") {
+        return {
+          agent: "conversation_manager",
+          message_text: `Hello ${studentName}! 👋\n\nWelcome to your CAPS curriculum AI tutor! I can help with:\n\n📚 Homework Help - Step-by-step solutions\n📝 Practice Questions - Custom CAPS questions\n📄 Past Papers - Exam preparation\n\nWhat would you like help with today?`,
+          actions: [
+            {
+              action: "set_field",
+              field_name: "conversation_started",
+              value: "true",
+            },
+          ],
+          quick_replies: [
+            { title: "📚 Homework Help", payload: "homework_help" },
+            { title: "📝 Practice Questions", payload: "practice_questions" },
+            { title: "📄 Past Papers", payload: "past_papers" },
+          ],
+        };
+      } else {
+        return {
+          agent: "conversation_manager",
+          message_text: `Hi ${studentName}! I want to help you with your studies. 🎓\n\nCould you tell me more about what you need? For example:\n• "I need homework help with Grade 10 Math"\n• "I want practice questions for Physical Science"\n• "I need past exam papers"`,
+          actions: [],
+          quick_replies: [
+            { title: "📚 Homework Help", payload: "homework_help" },
+            { title: "📝 Practice Questions", payload: "practice_questions" },
+            { title: "📄 Past Papers", payload: "past_papers" },
+          ],
         };
       }
-    }
-
-    // Generic format (for testing)
-    else if (webhookData.message && webhookData.user_id) {
-      messageInfo = {
-        user_id: webhookData.user_id,
-        whatsapp_id: webhookData.user_id,
-        message_text: webhookData.message,
-        message_type: "text",
-        user_name: webhookData.user_name || "User",
-        platform: "generic",
-      };
-    }
-
-    return messageInfo;
-  } catch (error) {
-    console.error("❌ Error extracting message info:", error);
-    return null;
   }
 }
 
-// Store user interaction in Supabase database
-async function storeUserInteraction(messageInfo) {
-  try {
-    const { createClient } = require("@supabase/supabase-js");
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
-
-    // Check if user exists, create if not
-    let { data: existingUser } = await supabase
-      .from("users")
-      .select("*")
-      .eq("whatsapp_id", messageInfo.whatsapp_id)
-      .single();
-
-    if (!existingUser) {
-      // Create new user
-      const { data: newUser, error: userError } = await supabase
-        .from("users")
-        .insert([
-          {
-            whatsapp_id: messageInfo.whatsapp_id,
-            first_name: messageInfo.user_name.split(" ")[0] || "User",
-            last_name:
-              messageInfo.user_name.split(" ").slice(1).join(" ") || "",
-          },
-        ])
-        .select()
-        .single();
-
-      if (userError) throw userError;
-      existingUser = newUser;
-    }
-
-    // Store conversation
-    const { error: conversationError } = await supabase
-      .from("conversations")
-      .insert([
-        {
-          user_id: existingUser.id,
-          whatsapp_id: messageInfo.whatsapp_id,
-          message_text: messageInfo.message_text,
-          message_type: messageInfo.message_type,
-          sender: "user",
-        },
-      ]);
-
-    if (conversationError) throw conversationError;
-
-    console.log("✅ User interaction stored successfully");
-    return existingUser;
-  } catch (error) {
-    console.error("❌ Error storing user interaction:", error);
-    throw error;
-  }
-}
-
-// Generate response based on user message
-async function generateResponse(messageInfo) {
-  try {
-    const userMessage = messageInfo.message_text.toLowerCase().trim();
-
-    // Welcome message for new conversations
-    if (isWelcomeMessage(userMessage)) {
-      return {
-        type: "welcome",
-        text: `Hello ${messageInfo.user_name}! 👋\n\nI'm your CAPS curriculum AI tutor! I can help you with:\n\n📚 Homework questions\n📝 Practice exercises\n📄 Past exam papers\n🔍 Solving specific problems\n\nWhat would you like help with today?`,
-        agent: "welcome",
-      };
-    }
-
-    // Route to appropriate agent (placeholder for Phase 3)
-    const intent = detectIntent(userMessage);
-
-    return {
-      type: "agent_routing",
-      text: generateRoutingResponse(intent, messageInfo.user_name),
-      agent: intent.agent,
-      confidence: intent.confidence,
-    };
-  } catch (error) {
-    console.error("❌ Error generating response:", error);
-    return {
-      type: "error",
-      text: "I'm sorry, I'm having trouble processing your message right now. Please try again in a moment.",
-      agent: "error",
-    };
-  }
-}
-
-// Check if message is a welcome/greeting message
-function isWelcomeMessage(message) {
-  const welcomeKeywords = [
-    "hi",
-    "hello",
-    "hey",
-    "start",
-    "begin",
-    "help",
-    "good morning",
-    "good afternoon",
-    "good evening",
-    "sawubona",
-    "hello there",
-    "howzit",
-  ];
-
-  return welcomeKeywords.some(
-    (keyword) => message.includes(keyword) || message === keyword
-  );
-}
-
-// Detect user intent (simplified version - will be enhanced in Phase 3)
-function detectIntent(message) {
-  const intents = [
-    {
-      keywords: [
-        "homework",
-        "assignment",
-        "help with",
-        "solve this",
-        "explain",
-      ],
-      agent: "homework",
-      name: "homework_help",
-    },
-    {
-      keywords: ["practice", "questions", "exercises", "quiz", "test myself"],
-      agent: "practice",
-      name: "practice_questions",
-    },
-    {
-      keywords: ["past papers", "exam papers", "previous", "old papers"],
-      agent: "past_papers",
-      name: "past_papers",
-    },
-    {
-      keywords: ["grade", "level", "subject", "what grade"],
-      agent: "profile",
-      name: "user_profile",
-    },
-  ];
-
-  for (const intent of intents) {
-    const matchCount = intent.keywords.filter((keyword) =>
-      message.includes(keyword)
-    ).length;
-
-    if (matchCount > 0) {
-      return {
-        agent: intent.agent,
-        name: intent.name,
-        confidence: matchCount / intent.keywords.length,
-        matched_keywords: intent.keywords.filter((keyword) =>
-          message.includes(keyword)
-        ),
-      };
-    }
-  }
-
-  // Default to agent manager if no specific intent detected
-  return {
-    agent: "agent_manager",
-    name: "general_query",
-    confidence: 0.5,
-    matched_keywords: [],
-  };
-}
-
-// Generate routing response based on detected intent
-function generateRoutingResponse(intent, userName) {
-  const responses = {
-    homework: `Great! I can help you with your homework, ${userName}. 📚\n\nPlease share your homework question, and I'll provide step-by-step guidance to help you understand the solution.`,
-
-    practice: `Perfect! Let's get you some practice questions, ${userName}. 📝\n\nWhat subject and grade level would you like to practice? For example: "Grade 10 Mathematics" or "Grade 11 Physical Science"`,
-
-    past_papers: `I can help you access past exam papers, ${userName}. 📄\n\nPlease tell me your grade and subject. For example: "Grade 12 Mathematics past papers"`,
-
-    profile: `Let me help you set up your learning profile, ${userName}. 👤\n\nWhat grade are you in? And what subjects are you studying?`,
-
-    agent_manager: `I understand you need help, ${userName}. 🤔\n\nCould you be more specific about what you'd like help with? For example:\n• "Help with my math homework"\n• "I need practice questions for science"\n• "Show me past exam papers"`,
-  };
-
-  return responses[intent.agent] || responses.agent_manager;
-}
-
-// Log webhook interaction for debugging
-async function logWebhookInteraction(webhookData, processedMessage) {
-  try {
-    console.log("📊 Logging webhook interaction...");
-
-    // In production, you might want to store this in your database
-    // For now, we'll just log to console
-    const logEntry = {
-      timestamp: new Date().toISOString(),
-      webhook_data_size: JSON.stringify(webhookData).length,
-      processed_successfully: processedMessage.status === "processed",
-      user_id: processedMessage.user_message?.user_id || "unknown",
-      message_type: processedMessage.user_message?.message_type || "unknown",
-    };
-
-    console.log("📋 Interaction log:", logEntry);
-    return logEntry;
-  } catch (error) {
-    console.error("❌ Error logging interaction:", error);
-  }
-}
-
-// Export for both Vercel and local development
-module.exports = handler;
-module.exports.default = handler;
+// Export for Vercel
+module.exports.default = module.exports;
