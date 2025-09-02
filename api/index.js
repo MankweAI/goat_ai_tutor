@@ -56,38 +56,37 @@ module.exports = async (req, res) => {
       console.log(`💬 Message: "${student.message}"`);
 
       // Special handling for "Hi" messages - FIXED RESPONSE
-      if (
-        student.message.trim().toLowerCase() === "hi" ||
-        student.message.trim().toLowerCase() === "hello" ||
-        student.message.trim().toLowerCase() === "hey"
-      ) {
-        const welcomeMessage = `Welcome to your Grade 11 Mathematics AI Tutor! 📚
+if (
+  student.message.trim().toLowerCase() === "hi" ||
+  student.message.trim().toLowerCase() === "hello" ||
+  student.message.trim().toLowerCase() === "hey"
+) {
+  const welcomeMessage = `Welcome to your Grade 11 Mathematics AI Tutor! 📚
 
-I can help you with:
-• Solving algebra problems step-by-step
-• Explaining functions and number patterns
-• Working through trigonometry questions
-• Clarifying geometry concepts
-• Preparing for assessments
+Just tell me what you want me to help you with.
 
-Simply send me your Grade 11 Maths question or topic you need help with!`;
+I can assist with:
+• 🔢 Algebra & equations
+• 📈 Functions & graphs
+• 📐 Trigonometry
+• 📏 Geometry
+• 📊 Statistics`;
 
-        return res.status(200).json({
-          echo: echo,
-          message: welcomeMessage,
-          version: "v2",
-          content: {
-            messages: [{ type: "text", text: welcomeMessage }],
-            quick_replies: [
-              { title: "Functions", payload: "g11_math_functions" },
-              { title: "Trigonometry", payload: "g11_math_trig" },
-              { title: "Algebra", payload: "g11_math_algebra" },
-            ],
-          },
-          timestamp: new Date().toISOString(),
-        });
-      }
-
+  return res.status(200).json({
+    echo: echo,
+    message: welcomeMessage,
+    version: "v2",
+    content: {
+      messages: [{ type: "text", text: welcomeMessage }],
+      quick_replies: [
+        { title: "📈 Functions", payload: "g11_math_functions" },
+        { title: "📐 Trigonometry", payload: "g11_math_trig" },
+        { title: "🔢 Algebra", payload: "g11_math_algebra" },
+      ],
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
       // For all other messages, use the Grade 11 Maths AI Tutor
       const tutorResponse = await getGrade11MathsTutorResponse(student);
 
@@ -150,14 +149,14 @@ async function getGrade11MathsTutorResponse(student) {
     // Build context for the AI with CAPS curriculum knowledge
     const topicsContext = mathsTopics.join(", ");
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4",
-      temperature: 0.7,
-      max_tokens: 500,
-      messages: [
-        {
-          role: "system",
-          content: `You are a specialized Grade 11 Mathematics tutor for South African students following the CAPS curriculum.
+const completion = await openai.chat.completions.create({
+  model: "gpt-4",
+  temperature: 0.7,
+  max_tokens: 500,
+  messages: [
+    {
+      role: "system",
+      content: `You are a specialized Grade 11 Mathematics tutor for South African students following the CAPS curriculum.
 
 YOUR EXPERTISE:
 - Deep knowledge of Grade 11 CAPS Mathematics: ${topicsContext}
@@ -169,10 +168,26 @@ STUDENT INFO:
 - Name: ${student.first_name}
 - Message: "${student.message}"
 
+FORMATTING GUIDELINES:
+- Use WhatsApp-friendly formatting with line breaks for readability
+- Bold important concepts by placing *asterisks* around them
+- For steps in a solution, use clear numbering (1., 2., 3.) with line breaks
+- Use emojis strategically to highlight key points:
+  • 📈 For functions
+  • 🔢 For algebra
+  • 📐 For trigonometry
+  • 📏 For geometry
+  • 📊 For statistics
+  • ✏️ For examples
+  • 💡 For tips
+  • ⚠️ For common mistakes
+  • ✅ For correct answers
+- Use bulleted lists (•) for multiple points or steps
+- For equations, use clear spacing and formatting
+
 RESPONSE GUIDELINES:
 - Be conversational and natural like a real tutor
 - Don't use greetings at the start of every message
-- Use minimal emojis (1-2 maximum)
 - If the student asks about a Grade 11 Maths topic, provide specific, accurate information
 - If they ask about a different subject or grade, politely explain you specialize in Grade 11 Maths only
 - When explaining mathematics, use clear, step-by-step approaches
@@ -181,13 +196,13 @@ RESPONSE GUIDELINES:
 - Make students feel supported and encouraged
 
 Respond as a knowledgeable, helpful Grade 11 Mathematics tutor would.`,
-        },
-        {
-          role: "user",
-          content: student.message,
-        },
-      ],
-    });
+    },
+    {
+      role: "user",
+      content: student.message,
+    },
+  ],
+});
 
     const aiResponse = completion.choices[0].message.content;
 
