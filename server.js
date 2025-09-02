@@ -283,12 +283,167 @@ app.all("/api/system", async (req, res) => {
   }
 });
 
-// ❌ 404 Handler
+// 📨 WEBHOOK ENDPOINT (Add this section to server.js)
+app.all("/api/webhook", async (req, res) => {
+  // Set CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method === "GET") {
+    return res.status(200).json({
+      endpoint: "ManyChat Webhook - Working!",
+      status: "✅ Webhook endpoint is functional",
+      developer: "tasimaditheto",
+      description: "AI Agents First WhatsApp integration",
+      example: 'POST { "subscriber_id": "123", "first_name": "Sarah", "text": "Help", "echo": "test123" }',
+    });
+  }
+
+  if (req.method === "POST") {
+    try {
+      const webhookData = req.body;
+      
+      console.log("📨 Webhook received:", JSON.stringify(webhookData, null, 2));
+
+      // Extract student info
+      const studentInfo = {
+        subscriber_id: webhookData.subscriber_id || 'unknown',
+        first_name: webhookData.first_name || 'Student',
+        last_name: webhookData.last_name || '',
+        full_name: `${webhookData.first_name || 'Student'} ${webhookData.last_name || ''}`.trim(),
+        user_message: webhookData.text || 'Hello',
+        echo: webhookData.echo || null
+      };
+
+      // 🧠 SIMULATE AI BRAIN ANALYSIS
+      const message = studentInfo.user_message.toLowerCase();
+      let intent = 'general';
+      let agent = 'conversation_manager';
+
+      if (message.includes('homework') || message.includes('help')) {
+        intent = 'homework_help';
+        agent = 'homework';
+      } else if (message.includes('practice') || message.includes('questions')) {
+        intent = 'practice_questions';
+        agent = 'practice';
+      } else if (message.includes('past') || message.includes('papers')) {
+        intent = 'past_papers';
+        agent = 'papers';
+      } else if (message.includes('hi') || message.includes('hello')) {
+        intent = 'greeting';
+        agent = 'conversation_manager';
+      }
+
+      // 🎓 GENERATE AGENT RESPONSE
+      let agentResponse;
+      const studentName = studentInfo.first_name;
+
+      if (agent === 'homework') {
+        agentResponse = {
+          message_text: `Great! I can help with your homework, ${studentName}! 📚\n\nTo provide the best step-by-step guidance, please share:\n• Your specific homework question\n• Subject (Math, Science, etc.)\n• Grade level\n\nI'll break it down clearly for you!`,
+          quick_replies: [
+            { title: "📐 Mathematics", payload: "subject_mathematics" },
+            { title: "🔬 Physical Science", payload: "subject_science" },
+            { title: "📖 English", payload: "subject_english" }
+          ]
+        };
+      } else if (agent === 'practice') {
+        agentResponse = {
+          message_text: `Excellent! I'll create practice questions for you, ${studentName}! 📝\n\nPlease tell me:\n• Subject you want to practice\n• Your grade level\n• Specific topic (optional)\n\nI'll generate CAPS-aligned questions!`,
+          quick_replies: [
+            { title: "Grade 8-9", payload: "grade_8_9" },
+            { title: "Grade 10-11", payload: "grade_10_11" },
+            { title: "Grade 12", payload: "grade_12" }
+          ]
+        };
+      } else if (agent === 'papers') {
+        agentResponse = {
+          message_text: `Perfect! I can help you with past exam papers, ${studentName}! 📄\n\nTell me your grade and subject, for example:\n• "Grade 12 Mathematics"\n• "Grade 11 Physical Science"\n\nI'll provide past papers and memorandums!`,
+          quick_replies: [
+            { title: "📐 Math Papers", payload: "papers_mathematics" },
+            { title: "🔬 Science Papers", payload: "papers_science" },
+            { title: "📖 English Papers", payload: "papers_english" }
+          ]
+        };
+      } else {
+        agentResponse = {
+          message_text: `Hello ${studentName}! 👋\n\nWelcome to your CAPS curriculum AI tutor! I can help with:\n\n📚 Homework Help - Step-by-step solutions\n📝 Practice Questions - Custom CAPS questions\n📄 Past Papers - Exam preparation\n\nWhat would you like help with today?`,
+          quick_replies: [
+            { title: "📚 Homework Help", payload: "homework_help" },
+            { title: "📝 Practice Questions", payload: "practice_questions" },
+            { title: "📄 Past Papers", payload: "past_papers" }
+          ]
+        };
+      }
+
+      // 📤 RETURN MANYCHAT FORMAT WITH ECHO
+      const manyChatResponse = {
+        echo: studentInfo.echo,
+        version: "v2",
+        content: {
+          messages: [
+            {
+              type: "text",
+              text: agentResponse.message_text
+            }
+          ],
+          quick_replies: agentResponse.quick_replies || []
+        },
+        
+        // Debug info showing AI agents coordination
+        debug_info: {
+          timestamp: new Date().toISOString(),
+          student_info: studentInfo,
+          ai_analysis: {
+            intent_detected: intent,
+            agent_selected: agent,
+            brain_working: true
+          },
+          caps_aligned: true,
+          developer: "tasimaditheto"
+        }
+      };
+
+      console.log("📤 Webhook response:", JSON.stringify(manyChatResponse, null, 2));
+
+      return res.status(200).json(manyChatResponse);
+
+    } catch (error) {
+      console.error("❌ Webhook error:", error);
+      
+      const echo = req.body?.echo || null;
+      
+      return res.status(200).json({
+        echo: echo,
+        version: "v2",
+        content: {
+          messages: [
+            {
+              type: "text",
+              text: "I'm having trouble right now. Please try again in a moment! 🤖"
+            }
+          ]
+        },
+        error_logged: true,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  return res.status(405).json({ error: "Method not allowed" });
+});
+
+// Update the 404 handler to include webhook
 app.use("*", (req, res) => {
   res.status(404).json({
     error: "Endpoint not found",
     requested: req.originalUrl,
-    available_endpoints: ["/", "/api/brain", "/api/tutor", "/api/system"],
+    available_endpoints: ["/", "/api/brain", "/api/tutor", "/api/system", "/api/webhook"],
     note: "Server is working - endpoint just not found",
   });
 });

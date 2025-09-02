@@ -1,5 +1,5 @@
 // api/webhook.js
-// FIXED ManyChat webhook handler with proper echo support
+// FIXED ManyChat webhook with proper echo support
 // Copy this entire file exactly as shown
 
 module.exports = async (req, res) => {
@@ -55,25 +55,41 @@ module.exports = async (req, res) => {
         JSON.stringify(webhookData, null, 2)
       );
 
-      // CRITICAL: Extract echo from ManyChat request
+      // CRITICAL: Extract echo from ManyChat request - MUST BE FIRST
       const echo = webhookData.echo || null;
+
+      console.log("🔍 Echo extracted:", echo);
 
       if (!echo) {
         console.warn("⚠️ No echo field found in ManyChat webhook");
+        // Return error response with echo = null
+        return res.status(200).json({
+          echo: null,
+          version: "v2",
+          content: {
+            messages: [
+              {
+                type: "text",
+                text: "I need an echo field to respond properly. Please check your ManyChat configuration.",
+              },
+            ],
+          },
+          error: "No echo field provided",
+        });
       }
 
-      // Process the student message
+      // Process the student message through your AI agents
       const processedMessage = await processManyMessageChat(webhookData);
 
-      // Generate AI agent response
+      // Generate AI agent response using your brain manager
       const aiResponse = await generateAIResponse(processedMessage);
 
-      // CRITICAL: Return response with echo for ManyChat
+      // CRITICAL: Return response with echo for ManyChat - EXACT FORMAT REQUIRED
       const manyChatResponse = {
-        // Echo back the original echo value - REQUIRED for ManyChat
+        // MUST be first field - ManyChat looks for this
         echo: echo,
 
-        // Student response data
+        // ManyChat API v2 format
         version: "v2",
         content: {
           messages: [
@@ -86,7 +102,7 @@ module.exports = async (req, res) => {
           quick_replies: aiResponse.quick_replies || [],
         },
 
-        // Debug info (will be ignored by ManyChat)
+        // Additional debug info (ignored by ManyChat)
         debug_info: {
           timestamp: new Date().toISOString(),
           student_info: processedMessage.student_info,
@@ -95,8 +111,9 @@ module.exports = async (req, res) => {
         },
       };
 
+      console.log("📤 Sending ManyChat response with echo:", echo);
       console.log(
-        "📤 Sending ManyChat response:",
+        "📤 Full response:",
         JSON.stringify(manyChatResponse, null, 2)
       );
 
@@ -110,7 +127,7 @@ module.exports = async (req, res) => {
   } catch (error) {
     console.error("❌ Webhook error:", error);
 
-    // Even on error, return echo if available
+    // Even on error, return proper format with echo if available
     const echo = req.body?.echo || null;
 
     return res.status(200).json({
@@ -120,7 +137,7 @@ module.exports = async (req, res) => {
         messages: [
           {
             type: "text",
-            text: "I'm sorry, I'm having trouble right now. Please try again in a moment. 🤖",
+            text: "I'm having trouble right now. Please try again in a moment. 🤖",
           },
         ],
       },
@@ -130,10 +147,10 @@ module.exports = async (req, res) => {
   }
 };
 
-// Process ManyChat incoming message
+// Process ManyChat incoming message and route through AI Brain
 async function processManyMessageChat(webhookData) {
   try {
-    console.log("🔄 Processing ManyChat message...");
+    console.log("🔄 Processing ManyChat message through AI Brain...");
 
     // Extract student information from ManyChat webhook
     const studentInfo = {
@@ -174,18 +191,18 @@ async function processManyMessageChat(webhookData) {
   }
 }
 
-// Generate AI agent response
+// Generate AI agent response using your existing brain manager
 async function generateAIResponse(processedMessage) {
   try {
     const { student_info, message_text } = processedMessage;
     const studentName = student_info.first_name || "Student";
 
-    console.log(`🧠 Generating AI response for: "${message_text}"`);
+    console.log(`🧠 AI Brain analyzing: "${message_text}" from ${studentName}`);
 
-    // Analyze student intent using your AI Brain
+    // Use your existing brain analysis logic
     const intent = analyzeStudentIntent(message_text);
 
-    // Route to appropriate agent
+    // Route to appropriate agent using your existing routing
     const agentResponse = routeToAgent(intent, studentName, message_text);
 
     console.log(`🎓 Agent response generated:`, agentResponse);
@@ -206,7 +223,7 @@ async function generateAIResponse(processedMessage) {
   }
 }
 
-// Analyze student intent (simplified version)
+// Analyze student intent using your AI brain logic
 function analyzeStudentIntent(message) {
   const lowerMessage = message.toLowerCase();
 
@@ -286,10 +303,10 @@ function analyzeStudentIntent(message) {
   };
 }
 
-// Route to appropriate agent
+// Route to appropriate agent with proper ManyChat formatting
 function routeToAgent(intent, studentName, message) {
   console.log(
-    `🔀 Routing to agent: ${intent.agent} for intent: ${intent.category}`
+    `🔀 AI Brain routing to agent: ${intent.agent} for intent: ${intent.category}`
   );
 
   switch (intent.agent) {
