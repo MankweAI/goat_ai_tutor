@@ -1,11 +1,5 @@
 // api/index.js
-// OPTIONAL: Mirror webhook logic OR keep as is.
-// Here we simply proxy to webhook logic for consistency (reduces duplication).
-
+// Proxy to webhook to keep single logic source (unchanged)
 const webhookHandler = require("./webhook.js");
-
-module.exports = async (req, res) => {
-  return webhookHandler(req, res);
-};
-
+module.exports = async (req, res) => webhookHandler(req, res);
 module.exports.default = module.exports;

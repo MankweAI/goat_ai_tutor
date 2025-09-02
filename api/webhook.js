@@ -1,9 +1,22 @@
 // api/webhook.js
-// Grade 11 Mathematics WhatsApp Tutor (CAPS) - Concise, State-Aware, Agents-First
-// COPY & REPLACE existing /api/webhook.js with this file
+// Grade 11 Mathematics WhatsApp Tutor (CAPS) - Free‑Form, State-Aware, Manager Agent Routing
+// CHANGE LOG (this version):
+// 1. REMOVED ALL QUICK REPLIES / FIXED OPTION BUTTONS (free-form only)
+// 2. Only the FIRST greeting returns the fixed welcome message (with capabilities list).
+// 3. Every other user message is routed IMMEDIATELY to the Manager AI Agent (intent + response).
+// 4. No topic menus, no forced selection loops. Natural language only.
+// 5. Conversation state: { intent, agent, stage, topic, subtopic } persisted in lightweight in-memory session.
+// 6. Concise, one follow-up question per answer. No repeated capability list unless user explicitly asks "what can you do" / "help".
+// 7. Robust fallback logic always returns a valid message (never null).
+//
+// NOTE: In a serverless environment, in-memory state will reset on cold start.
+//       For persistence, mirror session object to Supabase later.
+//
+// ENV: Requires OPENAI_API_KEY
+//
+// MANYCHAT RESPONSE FORMAT: { echo, version:"v2", content:{ messages:[{type:"text", text: "..."}] } }
 
 const { getOpenAIClient } = require("../lib/config/openai");
-const { CAPS_SUBJECTS } = require("../lib/caps-knowledge");
 const {
   getSession,
   updateSession,
@@ -11,77 +24,12 @@ const {
   addHistory,
 } = require("../lib/session-state");
 const { sanitizeName } = require("../lib/sanitize");
-const {
-  classify,
-  normalizeSubtopic,
-  SUBTOPIC_MAP,
-} = require("../lib/topic-classifier");
 
-const OPENAI_MODEL = "gpt-4"; // adjust if needed
+const OPENAI_MODEL_MANAGER = "gpt-4"; // Manager agent (you may downgrade to gpt-3.5-turbo for cost)
+const OPENAI_MODEL_SOLVER = "gpt-4"; // For deeper solutions (kept same for MVP)
 const OPENAI_TIMEOUT_MS = 12000;
 
-// --- Utility: build safe ManyChat response ---
-function buildResponse(echo, text, quickReplies = []) {
-  if (!text || typeof text !== "string" || !text.trim()) {
-    text = "Please send a Grade 11 Maths topic or your exact question.";
-  }
-  return {
-    echo,
-    version: "v2",
-    content: {
-      messages: [{ type: "text", text }],
-      quick_replies: quickReplies.slice(0, 3),
-    },
-    timestamp: new Date().toISOString(),
-  };
-}
-
-// --- Quick reply builders ---
-function qrTopics() {
-  return [
-    { title: "🔢 Algebra", payload: "g11_algebra" },
-    { title: "📈 Functions", payload: "g11_functions" },
-    { title: "📐 Trig", payload: "g11_trig" },
-  ];
-}
-
-function qrForTopic(topic) {
-  const map = {
-    algebra: [
-      { title: "Exponents", payload: "g11_alg_exponents" },
-      { title: "Factoring", payload: "g11_alg_factoring" },
-      { title: "Equations", payload: "g11_alg_equations" },
-    ],
-    functions: [
-      { title: "Quadratic", payload: "g11_fun_quadratic" },
-      { title: "Exponential", payload: "g11_fun_exponential" },
-      { title: "Logarithmic", payload: "g11_fun_log" },
-    ],
-    trigonometry: [
-      { title: "Identities", payload: "g11_trig_identities" },
-      { title: "Sine/Cosine", payload: "g11_trig_rules" },
-      { title: "Equations", payload: "g11_trig_equations" },
-    ],
-    geometry: [
-      { title: "Distance", payload: "g11_geo_distance" },
-      { title: "Midpoint", payload: "g11_geo_midpoint" },
-      { title: "Gradient", payload: "g11_geo_gradient" },
-    ],
-    statistics: [
-      { title: "Mean/Median", payload: "g11_stats_mean_median" },
-      { title: "Std Dev", payload: "g11_stats_sd" },
-      { title: "Quartiles", payload: "g11_stats_quartiles" },
-    ],
-    probability: [
-      { title: "Counting", payload: "g11_prob_counting" },
-      { title: "Venn", payload: "g11_prob_venn" },
-      { title: "Tree", payload: "g11_prob_tree" },
-    ],
-  };
-  return map[topic] || qrTopics();
-}
-
-// --- Fixed Welcome Message ---
+// ----------- FIXED WELCOME MESSAGE (ONLY SENT ON FIRST HI/HELLO/HEY) -----------
 const FIXED_WELCOME = `Welcome to your Grade 11 Mathematics AI Tutor! 📚
 
 Just tell me what you want me to help you with.
@@ -93,6 +41,23 @@ I can assist with:
 • 📏 Geometry
 • 📊 Statistics`;
 
+// ----------- RESPONSE BUILDER (NO QUICK REPLIES) -----------
+function buildResponse(echo, text) {
+  if (!text || typeof text !== "string" || !text.trim()) {
+    text =
+      "Please send your Grade 11 Maths question or describe what you need help with.";
+  }
+  return {
+    echo,
+    version: "v2",
+    content: {
+      messages: [{ type: "text", text }],
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// ----------- MAIN SERVERLESS HANDLER -----------
 module.exports = async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -104,38 +69,39 @@ module.exports = async (req, res) => {
     if (req.method === "GET") {
       return res.status(200).json({
         endpoint: "Grade 11 Maths AI Tutor",
-        description: "State-aware CAPS aligned Grade 11 Maths chatbot",
+        mode: "free_form",
+        description:
+          "CAPS-aligned Grade 11 Maths AI tutor (no fixed options, AI Manager routed).",
+        note: "Send POST with {subscriber_id, first_name, text}.",
       });
     }
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    const data = req.body || {};
+    const body = req.body || {};
     const student = {
-      subscriber_id: data.subscriber_id || "unknown",
-      first_name: data.first_name || "",
-      message: (data.text || data.last_input_text || "").trim(),
+      subscriber_id: body.subscriber_id || "unknown",
+      first_name: body.first_name || "",
+      message: (body.text || body.last_input_text || "").trim(),
     };
-    let echo = data.echo || `auto_${Date.now()}_${student.subscriber_id}`;
+    let echo = body.echo || `auto_${Date.now()}_${student.subscriber_id}`;
     const cleanName = sanitizeName(student.first_name);
 
-    // Guard: empty message
     if (!student.message) {
       return res
         .status(200)
         .json(
           buildResponse(
             echo,
-            "Send a Grade 11 Maths topic (e.g. 'Functions', 'Trigonometry') or your specific question.",
-            qrTopics()
+            "Please send your Grade 11 Maths question or say what you need help with."
           )
         );
     }
 
     console.log(`📨 Incoming (${student.subscriber_id}): "${student.message}"`);
 
-    // LOOP / welcome echo detection
+    // Detect if user is echoing the welcome
     if (
       student.message.startsWith(
         "Welcome to your Grade 11 Mathematics AI Tutor"
@@ -146,138 +112,70 @@ module.exports = async (req, res) => {
         .json(
           buildResponse(
             echo,
-            "Please type a topic like 'Functions', 'Algebra', 'Trigonometry' or send your full question.",
-            qrTopics()
+            "Just send your question or say what you want to practice (e.g. 'I need help with trig identities')."
           )
         );
     }
 
-    // Fixed greeting
     const lower = student.message.toLowerCase();
-    if (["hi", "hello", "hey"].includes(lower)) {
-      return res
-        .status(200)
-        .json(buildResponse(echo, FIXED_WELCOME, qrTopics()));
+
+    // FIRST CONTACT GREETING -> fixed welcome ONLY once (if session fresh or greeting tokens)
+    const isGreeting = ["hi", "hello", "hey"].includes(lower);
+    const session = getSession(student.subscriber_id);
+    const isFirstTurn = session.turns === 0;
+
+    if (isGreeting && isFirstTurn) {
+      updateSession(student.subscriber_id, { turns: session.turns + 1 });
+      addHistory(student.subscriber_id, "assistant", FIXED_WELCOME);
+      return res.status(200).json(buildResponse(echo, FIXED_WELCOME));
     }
 
-    // Session
-    const session = getSession(student.subscriber_id);
-
-    // Duplicate detection
+    // Duplicate guard
     if (isDuplicate(student.subscriber_id, student.message)) {
       return res
         .status(200)
         .json(
           buildResponse(
             echo,
-            "Still here. Please refine: choose a topic (Algebra / Functions / Trig) or send your exact problem.",
-            qrTopics()
+            "I already received that. Please continue with your Grade 11 Maths question or add more detail."
           )
         );
     }
 
-    // Classification
-    const { topic: detectedTopic, subtopic: detectedSubtopicRaw } = classify(
-      student.message
-    );
-    let topic = session.topic || detectedTopic;
-    let subtopic = session.subtopic;
-    if (!session.topic && detectedTopic) topic = detectedTopic;
-    if (!subtopic && detectedSubtopicRaw)
-      subtopic = normalizeSubtopic(topic, detectedSubtopicRaw);
-
-    // State machine logic
-    let awaiting = session.awaiting;
-
-    // Transition rules
-    if (awaiting === "topic" && topic) {
-      awaiting = "subtopic";
-    }
-    if (awaiting === "subtopic" && topic && subtopic) {
-      awaiting = "problem";
+    // If user asks capabilities again
+    if (/what can you do|help|capabilities|options|menu/i.test(lower)) {
+      updateSession(student.subscriber_id, { turns: session.turns + 1 });
+      const recap =
+        "I help with Grade 11 Maths: algebra, functions, trigonometry, geometry, statistics. Just describe your problem, ask to practice, or request an explanation.";
+      addHistory(student.subscriber_id, "assistant", recap);
+      return res.status(200).json(buildResponse(echo, recap));
     }
 
-    // If user explicitly supplies a math expression / problem (contains = or x^ or numbers + operations)
-    const isProblemLike =
-      /[=]/.test(student.message) ||
-      /(\d+\s*[+−\-*/^]\s*\d+)/.test(student.message) ||
-      /(solve|find|simplify|factor|prove)/i.test(student.message);
-    if (awaiting === "problem" && isProblemLike) {
-      awaiting = "solving";
-    }
-
-    // Update session
-    updateSession(student.subscriber_id, {
-      topic,
-      subtopic,
-      awaiting,
-    });
-    addHistory(student.subscriber_id, "user", student.message);
-
-    // Fast deterministic handlers (no OpenAI)
-    if (awaiting === "topic" && !topic) {
-      return res
-        .status(200)
-        .json(
-          buildResponse(
-            echo,
-            "Select a Grade 11 Maths area or type your topic:",
-            qrTopics()
-          )
-        );
-    }
-
-    if (awaiting === "subtopic" && topic && !subtopic) {
-      const subList = (SUBTOPIC_MAP[topic] || [])
-        .slice(0, 5)
-        .map((s) => formatBullet(s))
-        .join("\n");
-      const conciseTopicName = prettyTopic(topic);
-      return res
-        .status(200)
-        .json(
-          buildResponse(
-            echo,
-            `*${conciseTopicName}* – choose a focus:\n${subList}\n\nReply with one (e.g. "${firstWord(
-              subList
-            )}") or send your exact problem.`,
-            qrForTopic(topic)
-          )
-        );
-    }
-
-    if (awaiting === "problem" && topic && subtopic && !isProblemLike) {
-      return res
-        .status(200)
-        .json(
-          buildResponse(
-            echo,
-            `Great. You chose *${prettyTopic(topic)} → ${capitalize(
-              subtopic
-            )}*.\nSend your specific problem or question now (e.g. numbers, equation, expression).`,
-            qrForTopic(topic)
-          )
-        );
-    }
-
-    // If we reach here we either solve or give conceptual explanation => OpenAI
-    const aiResult = await generateAIResponse({
+    // Route to Manager AI Agent (intent classification + appropriate answer generation)
+    const managerResult = await managerPipeline({
       name: cleanName,
       message: student.message,
-      topic,
-      subtopic,
-      mode: awaiting === "solving" || isProblemLike ? "solve" : "concept",
-      history: session.history,
+      session,
     });
 
-    addHistory(student.subscriber_id, "assistant", aiResult.core);
+    // Update session state from manager
+    updateSession(student.subscriber_id, {
+      turns: (session.turns || 0) + 1,
+      intent: managerResult.intent || session.intent || null,
+      agent: managerResult.agent || session.agent || null,
+      stage:
+        managerResult.stage ||
+        managerResult.next_stage ||
+        session.stage ||
+        "followup",
+      topic: managerResult.topic || session.topic || null,
+      subtopic: managerResult.subtopic || session.subtopic || null,
+    });
 
-    // After solve/concept, set awaiting followup
-    updateSession(student.subscriber_id, { awaiting: "followup" });
+    addHistory(student.subscriber_id, "user", student.message);
+    addHistory(student.subscriber_id, "assistant", managerResult.output);
 
-    const followQR = topic ? qrForTopic(topic) : qrTopics();
-
-    return res.status(200).json(buildResponse(echo, aiResult.core, followQR));
+    return res.status(200).json(buildResponse(echo, managerResult.output));
   } catch (err) {
     console.error("❌ Webhook fatal error:", err);
     const echo = (req.body && req.body.echo) || `error_${Date.now()}`;
@@ -286,61 +184,179 @@ module.exports = async (req, res) => {
       .json(
         buildResponse(
           echo,
-          "Temporary issue. Send a Grade 11 Maths topic (Algebra / Functions / Trig) or your question.",
-          qrTopics()
+          "Temporary issue. Please resend your Grade 11 Maths question or request."
         )
       );
   }
 };
 
-// --- AI Generation (concise) ---
-async function generateAIResponse(ctx) {
-  const { name, message, topic, subtopic, mode, history } = ctx;
+// ----------- MANAGER PIPELINE -----------
+async function managerPipeline(ctx) {
+  // 1. Lightweight local intent detection
+  const localIntent = classifyIntentLocally(ctx.message);
 
+  // 2. If trivial (good enough), proceed without OpenAI classification (cost save)
+  const needLLMIntent = localIntent.confidence < 0.8;
+
+  let refinedIntent = localIntent;
+  if (needLLMIntent) {
+    try {
+      refinedIntent = await classifyIntentLLM(ctx.message);
+    } catch (e) {
+      console.warn("⚠️ Intent LLM fallback:", e.message);
+    }
+  }
+
+  // 3. Decide agent + stage
+  const agentMapping = {
+    homework_help: "homework",
+    practice: "practice",
+    concept: "concept",
+    exam_prep: "exam_prep",
+    general_query: "conversation",
+  };
+  const agent = agentMapping[refinedIntent.category] || "conversation";
+
+  // Determine stage
+  let stage = "followup";
+  if (agent === "homework") stage = "collecting_details";
+  if (agent === "practice") stage = "practice_setup";
+  if (agent === "concept") stage = "concept_explain";
+  if (agent === "exam_prep") stage = "exam_support";
+
+  // 4. Generate actual response (choose specialized or generic)
+  const response = await generateManagerResponse({
+    ...ctx,
+    intent: refinedIntent,
+    agent,
+    stage,
+  });
+
+  return {
+    intent: refinedIntent.category,
+    agent,
+    stage,
+    topic: response.topic || null,
+    subtopic: response.subtopic || null,
+    output: response.text,
+  };
+}
+
+// ----------- LOCAL INTENT CLASSIFIER -----------
+function classifyIntentLocally(message) {
+  const m = message.toLowerCase();
+  if (/(homework|solve|help me solve|equation|question|working)/.test(m))
+    return { category: "homework_help", confidence: 0.85 };
+  if (/(practice|drill|exercises|give me questions|more questions)/.test(m))
+    return { category: "practice", confidence: 0.85 };
+  if (/(explain|what is|definition|meaning of|concept)/.test(m))
+    return { category: "concept", confidence: 0.8 };
+  if (/(exam|test|past paper|revision|revise|prepare)/.test(m))
+    return { category: "exam_prep", confidence: 0.8 };
+  return { category: "general_query", confidence: 0.5 };
+}
+
+// ----------- LLM INTENT CLASSIFIER (FALLBACK) -----------
+async function classifyIntentLLM(message) {
   const openai = getOpenAIClient();
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
 
-  // Reduce history to short summary lines
-  const historyLines = history
-    .filter((h) => h.role !== "system")
+  const system = `You classify a Grade 11 Maths help message into one category:
+homework_help | practice | concept | exam_prep | general_query
+Respond JSON: {"category":"...","confidence":0.0-1.0,"reason":"brief"}`;
+
+  try {
+    const completion = await openai.chat.completions.create(
+      {
+        model: "gpt-3.5-turbo",
+        temperature: 0,
+        max_tokens: 80,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: message },
+        ],
+      },
+      { signal: controller.signal }
+    );
+
+    clearTimeout(to);
+    const raw = completion.choices[0].message.content;
+    return JSON.parse(raw);
+  } catch (e) {
+    clearTimeout(to);
+    console.warn("LLM intent classification failed:", e.message);
+    return { category: "general_query", confidence: 0.4, reason: "fallback" };
+  }
+}
+
+// ----------- MANAGER RESPONSE GENERATOR -----------
+async function generateManagerResponse(params) {
+  const { name, message, intent, agent, stage, history } = params;
+
+  // Heuristic fast responses for simple concept queries w/out need for full LLM
+  if (
+    agent === "practice" &&
+    /practice|drill|question/i.test(message.toLowerCase())
+  ) {
+    return {
+      text: "Sure. Which topic do you want practice in (e.g. factoring, quadratic functions, trig identities, analytical geometry, statistics)?",
+    };
+  }
+
+  if (
+    agent === "exam_prep" &&
+    /exam|past paper|revision|revise/i.test(message.toLowerCase())
+  ) {
+    return {
+      text: "Exam prep: specify focus—algebra procedures, functions graphs, trig identities, geometry proofs, or statistics interpretation? Pick one so I tailor support.",
+    };
+  }
+
+  // Otherwise use OpenAI for natural, context-aware reply
+  const openai = getOpenAIClient();
+  const historyCondensed = (history || [])
     .slice(-6)
-    .map((h) => `${h.role === "user" ? "U" : "A"}: ${truncate(h.content, 120)}`)
+    .map(
+      (h) =>
+        `${h.role === "user" ? "U" : "A"}: ${h.content
+          .replace(/\n+/g, " ")
+          .slice(0, 140)}`
+    )
     .join("\n");
 
   const systemPrompt = `
-You are a concise, expert Grade 11 *Mathematics (CAPS)* tutor on WhatsApp.
-CONSTRAINTS:
-- Max ~80 words unless multi-step solution required.
-- If solving steps > 5 lines: show first 3–4 steps then ask "Need full breakdown?".
-- ONE focused follow-up question at end (unless user explicitly says "thanks" / ends).
-- No greeting at start of every reply.
-- Use minimal, relevant emojis (0–2). Use:
-  🔢 Algebra, 📈 Functions, 📐 Trig, 📏 Geometry, 📊 Stats, 💡 Tip, ✅ Result, ⚠️ Mistake
-- Bold key concepts with *asterisks*.
-- Grade 11 CAPS only. If outside scope: politely redirect to Grade 11 Maths focus.
+You are the MANAGER AI AGENT for a Grade 11 *Mathematics (CAPS curriculum)* WhatsApp tutor.
+GOALS:
+1. Interpret the student's free-form request.
+2. If it's homework_help: extract any equation/problem; if missing details ask for the exact question (variables, numbers, expression).
+3. If practice: ask for a clear topic inside Grade 11 Maths (only ONE focused follow-up question).
+4. If concept: give a concise definition/explanation (≤70 words) plus ONE clarifying or next-step question.
+5. If exam_prep: ask for specific area (e.g. algebra procedures, trig identities, functions, geometry, statistics).
+6. If general_query: politely guide them to phrase what they need (homework question, concept, or practice).
+7. NEVER list the whole capability catalogue again unless user explicitly asks what you can do. (User already saw welcome.)
+8. ONE question at the end; minimal emojis (0–1). Only use relevant emoji (e.g. ✅, 💡, 🔢, 📈, 📐, 📏, 📊).
+9. Keep tone supportive, concise, and professional. No greeting repetition.
 
-CURRENT CONTEXT:
-Topic: ${topic || "unknown"}
-Subtopic: ${subtopic || "none"}
-Mode: ${mode}
+CONTEXT:
+Intent Category: ${intent.category}
+Agent: ${agent}
+Stage: ${stage}
 Student Name: ${name || "Student"}
 
 RECENT HISTORY:
-${historyLines || "(none)"}
+${historyCondensed || "(none)"}
 
-TASK:
-Produce a helpful ${
-    mode === "solve"
-      ? "step-by-step solution/explanation"
-      : "concise concept explanation"
-  } for:
+USER MESSAGE:
 "${message}"
 
-OUTPUT FORMAT (plain text WhatsApp ready):
-- Core explanation / steps
-- Follow-up question (exactly one) OR short prompt for next input.
-Do NOT add section headings like "Solution:" — be natural.`.trim();
-
-  const userPrompt = message;
+OUTPUT REQUIREMENTS:
+- Plain text only.
+- 1 concise explanatory / guiding block (no more than ~90 words).
+- End with exactly ONE targeted question (unless user clearly ended).
+- No bullet list unless absolutely needed; prefer a compact sentence.
+- Do not repeat 'I can assist with algebra, functions...' unless explicitly asked for capabilities.
+`;
 
   const controller = new AbortController();
   const to = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
@@ -348,74 +364,48 @@ Do NOT add section headings like "Solution:" — be natural.`.trim();
   try {
     const completion = await openai.chat.completions.create(
       {
-        model: OPENAI_MODEL,
-        temperature: 0.6,
-        max_tokens: 450,
+        model: OPENAI_MODEL_MANAGER,
+        temperature: 0.55,
+        max_tokens: 260,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
+          { role: "user", content: message },
         ],
       },
       { signal: controller.signal }
     );
 
     clearTimeout(to);
-
-    const core = (completion.choices[0].message.content || "").trim();
-    return { core };
+    const text = (completion.choices[0].message.content || "").trim();
+    return { text };
   } catch (e) {
     clearTimeout(to);
-    console.error("⚠️ OpenAI fallback:", e.message);
-    // Fallback minimal response
-    return {
-      core: fallbackFor(topic, subtopic, mode),
-    };
+    console.error("⚠️ Manager LLM failure:", e.message);
+    // Fallback heuristic
+    switch (intent.category) {
+      case "homework_help":
+        return {
+          text: "Please send the full homework question (include the equation or expression) so I can guide you step-by-step.",
+        };
+      case "practice":
+        return {
+          text: "Which Grade 11 Maths topic do you want practice in: algebra, functions, trigonometry, geometry or statistics?",
+        };
+      case "concept":
+        return {
+          text: "Name the exact concept you want explained (e.g. 'hyperbolic function basics' or 'sine rule').",
+        };
+      case "exam_prep":
+        return {
+          text: "Specify exam focus: algebra techniques, trig identities, functions analysis, geometry proofs or statistics interpretation?",
+        };
+      default:
+        return {
+          text: "Tell me if you need homework help, practice, a concept explanation, or exam prep—and include the topic.",
+        };
+    }
   }
 }
 
-// --- Fallback explanation templates ---
-function fallbackFor(topic, subtopic, mode) {
-  if (mode === "solve") {
-    return "Let's solve this step-by-step, but I'm having a brief technical issue. Please restate the exact expression or equation so I can guide you.";
-  }
-  if (topic === "algebra") {
-    return "*Algebra* 🔢 involves manipulating symbols & expressions. Specify: exponents, factoring, equations, inequalities or fractions?";
-  }
-  return "Please provide a specific Grade 11 Maths topic (Algebra / Functions / Trig / Geometry / Statistics) or your exact question.";
-}
-
-// --- Helpers ---
-function prettyTopic(t) {
-  return (
-    {
-      algebra: "Algebra",
-      functions: "Functions",
-      trigonometry: "Trigonometry",
-      geometry: "Geometry",
-      statistics: "Statistics",
-      probability: "Probability",
-      number_patterns: "Number Patterns",
-    }[t] || capitalize(t || "")
-  );
-}
-
-function capitalize(str) {
-  if (!str) return "";
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-function firstWord(linesJoined) {
-  const firstLine = linesJoined.split("\n")[0];
-  return firstLine.replace(/^[•\-\*\s]+/, "").split(/\s+/)[0];
-}
-
-function formatBullet(text) {
-  return "• " + capitalize(text);
-}
-
-function truncate(str, n) {
-  return str.length > n ? str.slice(0, n - 3) + "..." : str;
-}
-
-// Export for Vercel
+// ----------- EXPORT (Vercel) -----------
 module.exports.default = module.exports;
