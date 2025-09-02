@@ -3,8 +3,9 @@
 // - Difficulty progression for practice
 // - Unique question rotation
 // - Topic switching at ANY time
+// - First-time vs Returning-user welcome variants
 // - No quick replies
-// KEEP IT SIMPLE FOR NOW (in-memory)
+// - NO inactivity nudge (per instruction)
 
 const {
   buildPracticePack,
@@ -16,16 +17,19 @@ const {
 } = require("../lib/assist-packs");
 const { getOpenAIClient } = require("../lib/config/openai");
 
-// In-memory sessions (simple)
+// In-memory sessions (simple – NOT persistent across cold starts)
 const sessions = new Map();
 function getSession(id) {
   if (!sessions.has(id)) {
     sessions.set(id, {
       turns: 0,
       welcome_sent: false,
+      returning_welcome_sent: false,
       help_sent: false,
       last_help_type: null,
       expectation: null,
+      first_seen_at: Date.now(),
+      last_interaction_at: Date.now(),
 
       // Practice tracking
       practice: {
@@ -38,16 +42,11 @@ function getSession(id) {
   return sessions.get(id);
 }
 
-const WELCOME = `Welcome to your Grade 11 Mathematics AI Tutor! 📚
-
-Just tell me what you want me to help you with.
-
-I can assist with:
-• 🔢 Algebra & equations
-• 📈 Functions & graphs
-• 📐 Trigonometry
-• 📏 Geometry
-• 📊 Statistics`;
+// NEW: First-time & returning welcome variants
+const FIRST_TIME_WELCOME =
+  "Hey 👋 Welcome to The GOAT. Need homework help, tougher practice, or a concept explained? Type it—I got you! 📚🔢";
+const RETURNING_WELCOME =
+  "Back again 👋 Ready for more? Drop a homework question, ask for tougher practice, or name a concept to unpack—I’ve got you. 🔁📚";
 
 module.exports = async (req, res) => {
   // CORS
@@ -79,19 +78,42 @@ module.exports = async (req, res) => {
 
     const session = getSession(userId);
     session.turns += 1;
+    session.last_interaction_at = Date.now();
 
-    // First greeting
-    if (!session.welcome_sent && /^hi$|^hello$|^hey$/i.test(message)) {
+    const isGreeting = /^hi$|^hello$|^hey$/i.test(message);
+
+    // FIRST-TIME WELCOME
+    if (!session.welcome_sent && isGreeting) {
       session.welcome_sent = true;
-      return send(res, echo, WELCOME);
+      return send(res, echo, FIRST_TIME_WELCOME);
     }
 
-    // Avoid welcome echo loops
-    if (message.startsWith("Welcome to your Grade 11 Mathematics AI Tutor")) {
+    // RETURNING USER WELCOME:
+    // Conditions:
+    // - Already had first-time welcome (welcome_sent true)
+    // - Has previously received help (help_sent true) OR turns > 3
+    // - Greeting again
+    // - Haven't already shown returning variant this session
+    if (
+      isGreeting &&
+      session.welcome_sent &&
+      !session.returning_welcome_sent &&
+      (session.help_sent || session.turns > 3)
+    ) {
+      session.returning_welcome_sent = true;
+      return send(res, echo, RETURNING_WELCOME);
+    }
+
+    // Prevent echo loops of old/other welcome text
+    if (
+      message.startsWith("Welcome to your Grade 11 Mathematics AI Tutor") ||
+      message === FIRST_TIME_WELCOME ||
+      message === RETURNING_WELCOME
+    ) {
       return send(
         res,
         echo,
-        "Just say what you need: homework help, practice, concept, exam prep."
+        "Just say what you need: homework help, practice, concept, or exam prep."
       );
     }
 
@@ -133,22 +155,19 @@ module.exports = async (req, res) => {
       );
     }
 
-    // If user wants to switch topic mid 'awaiting_answers' expectation
+    // Topic switch mid flow
     if (topicSwitch) {
       const newTopic = topicSwitch;
-      // If they ask explicitly for concept
       if (wantsExplanation && session.last_help_type !== "concept_pack") {
         const conceptPack = buildConceptPack(newTopic);
         applyPackToSession(session, conceptPack, newTopic);
         return send(res, echo, conceptPack.text);
       }
-      // If they were in practice or ask for practice/ more
       if (
         session.last_help_type === "practice_pack" ||
         wantsPractice ||
         asksMore
       ) {
-        // Reset practice state for new topic
         session.practice.topic = newTopic;
         session.practice.difficulty = "easy";
         session.practice.used_question_ids = [];
@@ -156,25 +175,22 @@ module.exports = async (req, res) => {
         applyPracticePack(session, practicePack);
         return send(res, echo, practicePack.text);
       }
-      // If they say 'homework' with topic
       if (wantsHomework) {
         const hw = buildHomeworkScaffold(message, newTopic);
         applyPackToSession(session, hw, newTopic);
         return send(res, echo, hw.text);
       }
-      // Default: give concept pack for new topic
       const concept = buildConceptPack(newTopic);
       applyPackToSession(session, concept, newTopic);
       return send(res, echo, concept.text);
     }
 
-    // If currently awaiting answers and user says 'more'
+    // More (next difficulty)
     if (
       session.last_help_type === "practice_pack" &&
       session.expectation === "awaiting_answers" &&
       asksMore
     ) {
-      // Escalate difficulty
       const currentDiff = session.practice.difficulty;
       const nextDiff = nextDifficulty(currentDiff);
       session.practice.difficulty = nextDiff;
@@ -187,7 +203,7 @@ module.exports = async (req, res) => {
       return send(res, echo, practicePack.text);
     }
 
-    // If awaiting answers and they try to change mode implicitly (e.g. "help me with stats"), we already covered topicSwitch. If they ask for explanation on current topic:
+    // Convert practice → concept explanation (same topic)
     if (
       session.last_help_type === "practice_pack" &&
       session.expectation === "awaiting_answers" &&
@@ -199,7 +215,7 @@ module.exports = async (req, res) => {
       return send(res, echo, concept.text);
     }
 
-    // If user attempts to send answers (numbers or = or factoring words) while awaiting answers
+    // User attempts answers
     if (
       session.last_help_type === "practice_pack" &&
       session.expectation === "awaiting_answers" &&
@@ -214,7 +230,7 @@ module.exports = async (req, res) => {
       );
     }
 
-    // If they explicitly request solutions
+    // Asking for solutions
     if (
       /solution|answer/.test(lower) &&
       session.last_help_type === "practice_pack"
@@ -222,16 +238,15 @@ module.exports = async (req, res) => {
       return send(
         res,
         echo,
-        "Provide your attempt first (e.g. 1)=..., 2)=...). Then I’ll confirm or guide. Or say 'more' for the next level."
+        "Give your attempt first (e.g. 1)=..., 2)=...). Then I’ll confirm or guide. Or say 'more' for the next level."
       );
     }
 
-    // User asks for practice (initial or after concept)
+    // Practice request
     if (wantsPractice) {
       if (!session.practice.topic) {
         session.practice.topic = guessTopic(lower) || "algebra";
       }
-      // Reset if switching from concept to practice
       if (session.last_help_type !== "practice_pack") {
         session.practice.difficulty = "easy";
         session.practice.used_question_ids = [];
@@ -271,10 +286,9 @@ module.exports = async (req, res) => {
       return send(res, echo, concept.text);
     }
 
-    // If user just says a topic (algebra / geometry / stats etc.) with no explicit intent
+    // Bare topic mention
     if (!session.help_sent && pureTopicOnly(lower)) {
       const topic = guessTopic(lower) || "algebra";
-      // Provide immediate practice starter (fast value)
       session.practice.topic = topic;
       session.practice.difficulty = "easy";
       session.practice.used_question_ids = [];
@@ -283,12 +297,12 @@ module.exports = async (req, res) => {
       return send(res, echo, pack.text);
     }
 
-    // Fallback: encourage specification but keep momentum
+    // Fallback before any help
     if (!session.help_sent) {
       return send(
         res,
         echo,
-        "Tell me: practice, homework, concept, or exam prep—and include topic if you can (e.g. 'practice trig')."
+        "Tell me: practice, homework, concept, or exam prep—with topic if possible (e.g. 'practice trig')."
       );
     }
 
@@ -296,7 +310,7 @@ module.exports = async (req, res) => {
     return send(
       res,
       echo,
-      "Continue—say 'more' for harder, name new topic (e.g. 'geometry'), or send an equation/data."
+      "Continue—say 'more' for harder, name a new topic (e.g. 'geometry'), or send an equation/data."
     );
   } catch (e) {
     console.error("Webhook error:", e);
@@ -344,7 +358,6 @@ function guessTopic(lower) {
 }
 
 function pureTopicOnly(lower) {
-  // message contains a topic word but not other intent keywords
   const topic = detectTopicSwitch(lower);
   if (!topic) return false;
   if (
@@ -358,10 +371,8 @@ function applyPracticePack(session, practicePack) {
   session.help_sent = true;
   session.last_help_type = "practice_pack";
   session.expectation = practicePack.expectation;
-  // update practice state
   session.practice.topic = practicePack.topic;
   session.practice.difficulty = practicePack.difficulty;
-  // add used ids
   practicePack.question_ids.forEach((id) => {
     if (!session.practice.used_question_ids.includes(id)) {
       session.practice.used_question_ids.push(id);
@@ -373,9 +384,7 @@ function applyPackToSession(session, pack, topic) {
   session.help_sent = true;
   session.last_help_type = pack.help_type;
   session.expectation = pack.expectation;
-  if (topic) {
-    session.practice.topic = normalizeTopic(topic);
-  }
+  if (topic) session.practice.topic = normalizeTopic(topic);
 }
 
 async function quickSolve(raw) {
@@ -393,7 +402,6 @@ async function quickSolve(raw) {
       c - b
     })/${a} = ${x}. Want a harder one or a different topic?`;
   }
-  // Fallback to AI (concise)
   try {
     const client = getOpenAIClient();
     const completion = await client.chat.completions.create({
