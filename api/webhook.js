@@ -1,8 +1,97 @@
-// api/webhook.js - Fixed to handle message loops and prevent null responses
-// Copy this entire file to replace your current version
+// api/webhook.js
+// Grade 11 Mathematics WhatsApp Tutor (CAPS) - Concise, State-Aware, Agents-First
+// COPY & REPLACE existing /api/webhook.js with this file
 
 const { getOpenAIClient } = require("../lib/config/openai");
 const { CAPS_SUBJECTS } = require("../lib/caps-knowledge");
+const {
+  getSession,
+  updateSession,
+  isDuplicate,
+  addHistory,
+} = require("../lib/session-state");
+const { sanitizeName } = require("../lib/sanitize");
+const {
+  classify,
+  normalizeSubtopic,
+  SUBTOPIC_MAP,
+} = require("../lib/topic-classifier");
+
+const OPENAI_MODEL = "gpt-4"; // adjust if needed
+const OPENAI_TIMEOUT_MS = 12000;
+
+// --- Utility: build safe ManyChat response ---
+function buildResponse(echo, text, quickReplies = []) {
+  if (!text || typeof text !== "string" || !text.trim()) {
+    text = "Please send a Grade 11 Maths topic or your exact question.";
+  }
+  return {
+    echo,
+    version: "v2",
+    content: {
+      messages: [{ type: "text", text }],
+      quick_replies: quickReplies.slice(0, 3),
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// --- Quick reply builders ---
+function qrTopics() {
+  return [
+    { title: "🔢 Algebra", payload: "g11_algebra" },
+    { title: "📈 Functions", payload: "g11_functions" },
+    { title: "📐 Trig", payload: "g11_trig" },
+  ];
+}
+
+function qrForTopic(topic) {
+  const map = {
+    algebra: [
+      { title: "Exponents", payload: "g11_alg_exponents" },
+      { title: "Factoring", payload: "g11_alg_factoring" },
+      { title: "Equations", payload: "g11_alg_equations" },
+    ],
+    functions: [
+      { title: "Quadratic", payload: "g11_fun_quadratic" },
+      { title: "Exponential", payload: "g11_fun_exponential" },
+      { title: "Logarithmic", payload: "g11_fun_log" },
+    ],
+    trigonometry: [
+      { title: "Identities", payload: "g11_trig_identities" },
+      { title: "Sine/Cosine", payload: "g11_trig_rules" },
+      { title: "Equations", payload: "g11_trig_equations" },
+    ],
+    geometry: [
+      { title: "Distance", payload: "g11_geo_distance" },
+      { title: "Midpoint", payload: "g11_geo_midpoint" },
+      { title: "Gradient", payload: "g11_geo_gradient" },
+    ],
+    statistics: [
+      { title: "Mean/Median", payload: "g11_stats_mean_median" },
+      { title: "Std Dev", payload: "g11_stats_sd" },
+      { title: "Quartiles", payload: "g11_stats_quartiles" },
+    ],
+    probability: [
+      { title: "Counting", payload: "g11_prob_counting" },
+      { title: "Venn", payload: "g11_prob_venn" },
+      { title: "Tree", payload: "g11_prob_tree" },
+    ],
+  };
+  return map[topic] || qrTopics();
+}
+
+// --- Fixed Welcome Message ---
+const FIXED_WELCOME = `Welcome to your Grade 11 Mathematics AI Tutor! 📚
+
+Just tell me what you want me to help you with.
+
+I can assist with:
+• 🔢 Algebra & equations
+• 📈 Functions & graphs
+• 📐 Trigonometry
+• 📏 Geometry
+• 📊 Statistics`;
 
 module.exports = async (req, res) => {
   // CORS
@@ -15,748 +104,317 @@ module.exports = async (req, res) => {
     if (req.method === "GET") {
       return res.status(200).json({
         endpoint: "Grade 11 Maths AI Tutor",
-        description: "Specialized in South African CAPS Grade 11 Mathematics",
+        description: "State-aware CAPS aligned Grade 11 Maths chatbot",
       });
     }
-
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
     const data = req.body || {};
-
-    // Build / normalize student info
     const student = {
       subscriber_id: data.subscriber_id || "unknown",
-      first_name: data.first_name || "Student",
-      last_name: data.last_name || "",
-      full_name: `${data.first_name || "Student"} ${
-        data.last_name || ""
-      }`.trim(),
-      message: data.text || data.last_input_text || "No message",
+      first_name: data.first_name || "",
+      message: (data.text || data.last_input_text || "").trim(),
     };
+    let echo = data.echo || `auto_${Date.now()}_${student.subscriber_id}`;
+    const cleanName = sanitizeName(student.first_name);
 
-    // Auto-generate echo if missing
-    let echo = data.echo;
-    if (!echo) {
-      echo = `auto_${Date.now()}_${student.subscriber_id}`;
+    // Guard: empty message
+    if (!student.message) {
+      return res
+        .status(200)
+        .json(
+          buildResponse(
+            echo,
+            "Send a Grade 11 Maths topic (e.g. 'Functions', 'Trigonometry') or your specific question.",
+            qrTopics()
+          )
+        );
     }
 
-    console.log(`📨 Processing for student: ${student.full_name}`);
-    console.log(`💬 Message: "${student.message}"`);
+    console.log(`📨 Incoming (${student.subscriber_id}): "${student.message}"`);
 
-    // NEW: Detect if the message is our own welcome message or very long message
-    // This prevents message loops when users click on the bot's messages
-    const welcomeMessageStart = "Welcome to your Grade 11 Mathematics AI Tutor";
+    // LOOP / welcome echo detection
     if (
-      student.message.includes(welcomeMessageStart) ||
-      student.message.length > 200
+      student.message.startsWith(
+        "Welcome to your Grade 11 Mathematics AI Tutor"
+      )
     ) {
-      console.log(
-        "⚠️ Detected potential message loop - user sent our welcome message back"
-      );
-
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: "I notice you may have clicked on my message. To get help with a specific topic, just type the topic name like 'Functions' or 'Trigonometry', or ask me a question!",
-            },
-          ],
-          quick_replies: [
-            { title: "📈 Functions", payload: "g11_math_functions" },
-            { title: "📐 Trigonometry", payload: "g11_math_trig" },
-            { title: "🔢 Algebra", payload: "g11_math_algebra" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
+      return res
+        .status(200)
+        .json(
+          buildResponse(
+            echo,
+            "Please type a topic like 'Functions', 'Algebra', 'Trigonometry' or send your full question.",
+            qrTopics()
+          )
+        );
     }
 
-    // Special handling for "Hi" messages - FIXED RESPONSE
-    if (
-      student.message.trim().toLowerCase() === "hi" ||
-      student.message.trim().toLowerCase() === "hello" ||
-      student.message.trim().toLowerCase() === "hey"
-    ) {
-      const welcomeMessage = `Welcome to your Grade 11 Mathematics AI Tutor! 📚
-
-Just tell me what you want me to help you with.
-
-I can assist with:
-• 🔢 Algebra & equations
-• 📈 Functions & graphs
-• 📐 Trigonometry
-• 📏 Geometry
-• 📊 Statistics`;
-
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [{ type: "text", text: welcomeMessage }],
-          quick_replies: [
-            { title: "📈 Functions", payload: "g11_math_functions" },
-            { title: "📐 Trigonometry", payload: "g11_math_trig" },
-            { title: "🔢 Algebra", payload: "g11_math_algebra" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
+    // Fixed greeting
+    const lower = student.message.toLowerCase();
+    if (["hi", "hello", "hey"].includes(lower)) {
+      return res
+        .status(200)
+        .json(buildResponse(echo, FIXED_WELCOME, qrTopics()));
     }
 
-    // IMPROVED: Simple keyword detection for direct topics (fast response)
-    // This handles single-word queries like "Algebra" directly without OpenAI call
-    const lowerMessage = student.message.toLowerCase().trim();
-    if (lowerMessage === "algebra") {
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: `*Grade 11 Algebra* 🔢
+    // Session
+    const session = getSession(student.subscriber_id);
 
-In Grade 11 CAPS curriculum, Algebra includes:
-
-• Exponents and surds
-• Equations and inequalities
-• Algebraic functions
-• Linear programming
-• Factorization of expressions
-• Algebraic fractions
-
-What specific algebra topic would you like help with?`,
-            },
-          ],
-          quick_replies: [
-            { title: "🔢 Exponents", payload: "g11_math_exponents" },
-            { title: "🔢 Equations", payload: "g11_math_equations" },
-            { title: "🔢 Inequalities", payload: "g11_math_inequalities" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
+    // Duplicate detection
+    if (isDuplicate(student.subscriber_id, student.message)) {
+      return res
+        .status(200)
+        .json(
+          buildResponse(
+            echo,
+            "Still here. Please refine: choose a topic (Algebra / Functions / Trig) or send your exact problem.",
+            qrTopics()
+          )
+        );
     }
 
-    // Add similar direct handlers for other common topics
-    if (lowerMessage === "functions") {
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: `*Grade 11 Functions* 📈
+    // Classification
+    const { topic: detectedTopic, subtopic: detectedSubtopicRaw } = classify(
+      student.message
+    );
+    let topic = session.topic || detectedTopic;
+    let subtopic = session.subtopic;
+    if (!session.topic && detectedTopic) topic = detectedTopic;
+    if (!subtopic && detectedSubtopicRaw)
+      subtopic = normalizeSubtopic(topic, detectedSubtopicRaw);
 
-In Grade 11 CAPS curriculum, Functions includes:
+    // State machine logic
+    let awaiting = session.awaiting;
 
-• Quadratic functions
-• Exponential functions
-• Logarithmic functions
-• Hyperbolic functions
-• Function interpretation
-• Average gradient
-
-What specific function type would you like to explore?`,
-            },
-          ],
-          quick_replies: [
-            { title: "📈 Quadratic", payload: "g11_math_quadratic" },
-            { title: "📈 Exponential", payload: "g11_math_exponential" },
-            { title: "📈 Logarithmic", payload: "g11_math_logarithmic" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
+    // Transition rules
+    if (awaiting === "topic" && topic) {
+      awaiting = "subtopic";
+    }
+    if (awaiting === "subtopic" && topic && subtopic) {
+      awaiting = "problem";
     }
 
-    if (lowerMessage === "trigonometry") {
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: `*Grade 11 Trigonometry* 📐
-
-In Grade 11 CAPS curriculum, Trigonometry includes:
-
-• Trigonometric functions
-• Trigonometric identities
-• Trigonometric equations
-• Sine rule
-• Cosine rule
-• Area rule
-• 2D problems
-
-What specific trigonometry topic would you like help with?`,
-            },
-          ],
-          quick_replies: [
-            { title: "📐 Identities", payload: "g11_math_trig_identities" },
-            {
-              title: "📐 Sine & Cosine Rules",
-              payload: "g11_math_sine_cosine",
-            },
-            { title: "📐 Equations", payload: "g11_math_trig_equations" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
-    }
-    // Add these handlers after your existing topic handlers (around line 155)
-
-    // Add handlers for common algebra subtopics
-    if (lowerMessage === "linear programming") {
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: `*Linear Programming in Grade 11* 🔢
-
-Linear programming is about optimizing a linear objective function subject to linear constraints.
-
-In Grade 11 CAPS curriculum, you'll learn:
-
-• Setting up constraints from word problems
-• Graphing feasible regions
-• Finding optimal solutions
-• Solving real-world optimization problems
-
-Would you like to see an example problem or learn about a specific aspect of linear programming?`,
-            },
-          ],
-          quick_replies: [
-            { title: "🔢 Example Problem", payload: "g11_math_lp_example" },
-            { title: "🔢 Constraints", payload: "g11_math_lp_constraints" },
-            { title: "🔢 Optimization", payload: "g11_math_lp_optimization" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
+    // If user explicitly supplies a math expression / problem (contains = or x^ or numbers + operations)
+    const isProblemLike =
+      /[=]/.test(student.message) ||
+      /(\d+\s*[+−\-*/^]\s*\d+)/.test(student.message) ||
+      /(solve|find|simplify|factor|prove)/i.test(student.message);
+    if (awaiting === "problem" && isProblemLike) {
+      awaiting = "solving";
     }
 
-    if (lowerMessage === "factoring" || lowerMessage === "factorization") {
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: `*Factorization in Grade 11 Algebra* 🔢
-
-In Grade 11 CAPS curriculum, factorization includes:
-
-• Factoring quadratic expressions (ax² + bx + c)
-• Difference of squares (a² - b²)
-• Sum and difference of cubes (a³ ± b³)
-• Grouping method for more complex expressions
-• Factoring by completing the square
-
-Would you like me to explain a specific factoring technique or show you some examples?`,
-            },
-          ],
-          quick_replies: [
-            {
-              title: "🔢 Quadratic Factoring",
-              payload: "g11_math_factor_quadratic",
-            },
-            { title: "🔢 Common Factor", payload: "g11_math_factor_common" },
-            { title: "🔢 Examples", payload: "g11_math_factor_examples" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    if (lowerMessage === "exponents" || lowerMessage === "surds") {
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: `*Exponents and Surds in Grade 11* 🔢
-
-In Grade 11 CAPS curriculum, you'll work with:
-
-• Laws of exponents (a^m × a^n = a^(m+n), etc.)
-• Simplifying exponential expressions
-• Rational exponents (a^(m/n))
-• Surds (√a) and rationalization
-• Converting between surds and exponents
-
-Would you like to focus on exponents, surds, or see some examples?`,
-            },
-          ],
-          quick_replies: [
-            { title: "🔢 Exponent Laws", payload: "g11_math_exponent_laws" },
-            { title: "🔢 Surds", payload: "g11_math_surds" },
-            { title: "🔢 Examples", payload: "g11_math_exponent_examples" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    if (lowerMessage === "equations" || lowerMessage === "inequalities") {
-      return res.status(200).json({
-        echo: echo,
-        version: "v2",
-        content: {
-          messages: [
-            {
-              type: "text",
-              text: `*Equations & Inequalities in Grade 11* 🔢
-
-In Grade 11 CAPS curriculum, you'll solve:
-
-• Quadratic equations (ax² + bx + c = 0)
-• Simultaneous equations (linear & quadratic)
-• Exponential equations (a^x = b)
-• Logarithmic equations (log_a(x) = b)
-• Linear & quadratic inequalities
-• Graphical solutions
-
-Which type of equation or inequality would you like to explore?`,
-            },
-          ],
-          quick_replies: [
-            {
-              title: "🔢 Quadratic Equations",
-              payload: "g11_math_quad_equations",
-            },
-            {
-              title: "🔢 Exponential Equations",
-              payload: "g11_math_exp_equations",
-            },
-            { title: "🔢 Inequalities", payload: "g11_math_inequalities" },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    // Fix the error handling in getGrade11MathsTutorResponse function
-    // (around line 272 in the existing webhook.js file)
-    // Update the try/catch block to ensure we always return a valid response object
-
-    // GRADE 11 MATHS TUTOR RESPONSE
-    async function getGrade11MathsTutorResponse(student) {
-      try {
-        const openai = getOpenAIClient();
-
-        // Get Grade 11 Mathematics topics from CAPS curriculum
-        const mathsTopics = CAPS_SUBJECTS.core.Mathematics.topics[11] || [
-          "Functions",
-          "Number Patterns",
-          "Algebra",
-          "Geometry",
-          "Trigonometry",
-          "Statistics",
-          "Probability",
-        ];
-
-        // Build context for the AI with CAPS curriculum knowledge
-        const topicsContext = mathsTopics.join(", ");
-
-        // Truncate very long messages to prevent issues
-        const truncatedMessage =
-          student.message.length > 500
-            ? student.message.substring(0, 500) + "..."
-            : student.message;
-
-        console.log(`📤 Sending to OpenAI: "${truncatedMessage}"`);
-
-        // Add timeout to OpenAI call
-        const completionPromise = openai.chat.completions.create({
-          model: "gpt-4",
-          temperature: 0.7,
-          max_tokens: 500,
-          messages: [
-            {
-              role: "system",
-              content: `You are a specialized Grade 11 Mathematics tutor for South African students following the CAPS curriculum.
-
-YOUR EXPERTISE:
-- Deep knowledge of Grade 11 CAPS Mathematics: ${topicsContext}
-- Step-by-step problem solving
-- Clear explanations of mathematical concepts
-- Exam preparation and practice questions
-
-STUDENT INFO:
-- Name: ${student.first_name}
-- Message: "${truncatedMessage}"
-
-FORMATTING GUIDELINES:
-- Use WhatsApp-friendly formatting with line breaks for readability
-- Bold important concepts by placing *asterisks* around them
-- For steps in a solution, use clear numbering (1., 2., 3.) with line breaks
-- Use emojis strategically to highlight key points:
-  • 📈 For functions
-  • 🔢 For algebra
-  • 📐 For trigonometry
-  • 📏 For geometry
-  • 📊 For statistics
-  • ✏️ For examples
-  • 💡 For tips
-  • ⚠️ For common mistakes
-  • ✅ For correct answers
-- Use bulleted lists (•) for multiple points or steps
-- For equations, use clear spacing and formatting
-
-RESPONSE GUIDELINES:
-- Be conversational and natural like a real tutor
-- Don't use greetings at the start of every message
-- If the student asks about a Grade 11 Maths topic, provide specific, accurate information
-- If they ask about a different subject or grade, politely explain you specialize in Grade 11 Maths only
-- When explaining mathematics, use clear, step-by-step approaches
-- If they ask which topics you can help with, list specific Grade 11 CAPS Mathematics topics
-- Remember previous context in the conversation
-- Make students feel supported and encouraged
-
-Respond as a knowledgeable, helpful Grade 11 Mathematics tutor would.`,
-            },
-            {
-              role: "user",
-              content: truncatedMessage,
-            },
-          ],
-        });
-
-        // Create a timeout promise
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => {
-            reject(new Error("OpenAI request timed out after 10 seconds"));
-          }, 10000); // 10 second timeout
-        });
-
-        // Race the OpenAI call against the timeout
-        const completion = await Promise.race([
-          completionPromise,
-          timeoutPromise,
-        ]);
-
-        console.log(`✅ Received OpenAI response`);
-
-        const aiResponse = completion.choices[0].message.content;
-
-        // Determine appropriate quick replies based on message context
-        let quickReplies = [];
-        const lowerMessage = student.message.toLowerCase();
-
-        if (lowerMessage.includes("function")) {
-          quickReplies = [
-            { title: "📈 Quadratic Functions", payload: "g11_math_quadratic" },
-            {
-              title: "📈 Exponential Functions",
-              payload: "g11_math_exponential",
-            },
-            {
-              title: "📈 Function Examples",
-              payload: "g11_math_function_examples",
-            },
-          ];
-        } else if (lowerMessage.includes("trig")) {
-          quickReplies = [
-            {
-              title: "📐 Trig Identities",
-              payload: "g11_math_trig_identities",
-            },
-            {
-              title: "📐 Sine & Cosine Rules",
-              payload: "g11_math_sine_cosine",
-            },
-            { title: "📐 Trig Examples", payload: "g11_math_trig_examples" },
-          ];
-        } else if (
-          lowerMessage.includes("algebra") ||
-          lowerMessage.includes("equation")
-        ) {
-          quickReplies = [
-            { title: "🔢 Factoring", payload: "g11_math_factoring" },
-            { title: "🔢 Exponents", payload: "g11_math_exponents" },
-            {
-              title: "🔢 Linear Programming",
-              payload: "g11_math_linear_programming",
-            },
-          ];
-        } else if (
-          lowerMessage.includes("exam") ||
-          lowerMessage.includes("test")
-        ) {
-          quickReplies = [
-            { title: "📝 Practice Test", payload: "g11_math_practice_test" },
-            { title: "📝 Exam Tips", payload: "g11_math_exam_tips" },
-            {
-              title: "📝 Common Mistakes",
-              payload: "g11_math_common_mistakes",
-            },
-          ];
-        } else {
-          quickReplies = [
-            { title: "📈 Functions", payload: "g11_math_functions" },
-            { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
-            { title: "🔢 Algebra", payload: "g11_math_algebra" },
-          ];
-        }
-
-        return {
-          message: aiResponse,
-          quick_replies: quickReplies,
-        };
-      } catch (error) {
-        console.error("❌ Grade 11 Maths Tutor error:", error);
-
-        // Improved error handling with topic-specific fallbacks
-        const lowerMessage = student.message.toLowerCase();
-
-        // Check if error is related to specific algebra topics
-        if (lowerMessage.includes("factor")) {
-          return {
-            message: `*Factorization in Grade 11* 🔢\n\nFactorization is an important part of Grade 11 algebra where we break expressions into simpler parts.\n\nCommon factorization techniques include:\n• Common factor extraction\n• Difference of squares: a² - b² = (a+b)(a-b)\n• Trinomial factorization: ax² + bx + c\n• Grouping method\n\nWould you like to see examples of a specific factoring technique?`,
-            quick_replies: [
-              {
-                title: "🔢 Factoring Examples",
-                payload: "g11_math_factor_examples",
-              },
-              { title: "🔢 Common Factor", payload: "g11_math_common_factor" },
-              { title: "🔢 Trinomials", payload: "g11_math_trinomials" },
-            ],
-          };
-        }
-
-        if (lowerMessage.includes("linear program")) {
-          return {
-            message: `*Linear Programming in Grade 11* 🔢\n\nLinear programming involves finding optimal solutions (maximum or minimum values) subject to constraints.\n\nThe key steps include:\n• Identifying variables\n• Setting up constraints as inequalities\n• Determining the feasible region\n• Finding the optimal solution\n\nWould you like me to explain any of these steps in more detail?`,
-            quick_replies: [
-              { title: "🔢 Constraints", payload: "g11_math_lp_constraints" },
-              { title: "🔢 Feasible Region", payload: "g11_math_lp_region" },
-              { title: "🔢 LP Example", payload: "g11_math_lp_example" },
-            ],
-          };
-        }
-
-        // Generic math fallback for any other topics
-        return {
-          message: `I'd be happy to help with Grade 11 Mathematics topics like "${student.message}".\n\nLet me know if you have a specific question about this topic, or if you'd like to see examples, formulas, or step-by-step explanations.\n\nRemember that I specialize in the South African CAPS curriculum for Grade 11 Mathematics.`,
-          quick_replies: [
-            { title: "📈 Functions", payload: "g11_math_functions" },
-            { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
-            { title: "🔢 Algebra", payload: "g11_math_algebra" },
-          ],
-        };
-      }
-    }
-
-    // For all other messages, use the Grade 11 Maths AI Tutor
-    let tutorResponse;
-    try {
-      tutorResponse = await getGrade11MathsTutorResponse(student);
-    } catch (error) {
-      console.error("AI Tutor error:", error);
-      // Provide a fallback response in case of AI service errors
-      tutorResponse = {
-        message:
-          "I'm having trouble processing that right now. Could you rephrase your question about Grade 11 Mathematics?",
-        quick_replies: [
-          { title: "📈 Functions", payload: "g11_math_functions" },
-          { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
-          { title: "🔢 Algebra", payload: "g11_math_algebra" },
-        ],
-      };
-    }
-
-    const response = {
-      echo,
-      version: "v2",
-      content: {
-        messages: [{ type: "text", text: tutorResponse.message }],
-        quick_replies: tutorResponse.quick_replies || [],
-      },
-      timestamp: new Date().toISOString(),
-    };
-
-    console.log(`📤 Grade 11 Maths AI Tutor Response Sent`);
-    return res.status(200).json(response);
-  } catch (err) {
-    console.error("Webhook error:", err);
-    // IMPROVED: Always return a valid response even in case of errors
-    return res.status(200).json({
-      echo: req.body?.echo || `error_${Date.now()}`,
-      version: "v2",
-      content: {
-        messages: [
-          {
-            type: "text",
-            text: "I'm having a momentary technical issue. Please try asking about a specific Grade 11 Mathematics topic like 'Functions' or 'Algebra'.",
-          },
-        ],
-        quick_replies: [
-          { title: "📈 Functions", payload: "g11_math_functions" },
-          { title: "📐 Trigonometry", payload: "g11_math_trig" },
-          { title: "🔢 Algebra", payload: "g11_math_algebra" },
-        ],
-      },
-      error: true,
+    // Update session
+    updateSession(student.subscriber_id, {
+      topic,
+      subtopic,
+      awaiting,
     });
+    addHistory(student.subscriber_id, "user", student.message);
+
+    // Fast deterministic handlers (no OpenAI)
+    if (awaiting === "topic" && !topic) {
+      return res
+        .status(200)
+        .json(
+          buildResponse(
+            echo,
+            "Select a Grade 11 Maths area or type your topic:",
+            qrTopics()
+          )
+        );
+    }
+
+    if (awaiting === "subtopic" && topic && !subtopic) {
+      const subList = (SUBTOPIC_MAP[topic] || [])
+        .slice(0, 5)
+        .map((s) => formatBullet(s))
+        .join("\n");
+      const conciseTopicName = prettyTopic(topic);
+      return res
+        .status(200)
+        .json(
+          buildResponse(
+            echo,
+            `*${conciseTopicName}* – choose a focus:\n${subList}\n\nReply with one (e.g. "${firstWord(
+              subList
+            )}") or send your exact problem.`,
+            qrForTopic(topic)
+          )
+        );
+    }
+
+    if (awaiting === "problem" && topic && subtopic && !isProblemLike) {
+      return res
+        .status(200)
+        .json(
+          buildResponse(
+            echo,
+            `Great. You chose *${prettyTopic(topic)} → ${capitalize(
+              subtopic
+            )}*.\nSend your specific problem or question now (e.g. numbers, equation, expression).`,
+            qrForTopic(topic)
+          )
+        );
+    }
+
+    // If we reach here we either solve or give conceptual explanation => OpenAI
+    const aiResult = await generateAIResponse({
+      name: cleanName,
+      message: student.message,
+      topic,
+      subtopic,
+      mode: awaiting === "solving" || isProblemLike ? "solve" : "concept",
+      history: session.history,
+    });
+
+    addHistory(student.subscriber_id, "assistant", aiResult.core);
+
+    // After solve/concept, set awaiting followup
+    updateSession(student.subscriber_id, { awaiting: "followup" });
+
+    const followQR = topic ? qrForTopic(topic) : qrTopics();
+
+    return res.status(200).json(buildResponse(echo, aiResult.core, followQR));
+  } catch (err) {
+    console.error("❌ Webhook fatal error:", err);
+    const echo = (req.body && req.body.echo) || `error_${Date.now()}`;
+    return res
+      .status(200)
+      .json(
+        buildResponse(
+          echo,
+          "Temporary issue. Send a Grade 11 Maths topic (Algebra / Functions / Trig) or your question.",
+          qrTopics()
+        )
+      );
   }
 };
 
-// GRADE 11 MATHS TUTOR RESPONSE
-async function getGrade11MathsTutorResponse(student) {
+// --- AI Generation (concise) ---
+async function generateAIResponse(ctx) {
+  const { name, message, topic, subtopic, mode, history } = ctx;
+
+  const openai = getOpenAIClient();
+
+  // Reduce history to short summary lines
+  const historyLines = history
+    .filter((h) => h.role !== "system")
+    .slice(-6)
+    .map((h) => `${h.role === "user" ? "U" : "A"}: ${truncate(h.content, 120)}`)
+    .join("\n");
+
+  const systemPrompt = `
+You are a concise, expert Grade 11 *Mathematics (CAPS)* tutor on WhatsApp.
+CONSTRAINTS:
+- Max ~80 words unless multi-step solution required.
+- If solving steps > 5 lines: show first 3–4 steps then ask "Need full breakdown?".
+- ONE focused follow-up question at end (unless user explicitly says "thanks" / ends).
+- No greeting at start of every reply.
+- Use minimal, relevant emojis (0–2). Use:
+  🔢 Algebra, 📈 Functions, 📐 Trig, 📏 Geometry, 📊 Stats, 💡 Tip, ✅ Result, ⚠️ Mistake
+- Bold key concepts with *asterisks*.
+- Grade 11 CAPS only. If outside scope: politely redirect to Grade 11 Maths focus.
+
+CURRENT CONTEXT:
+Topic: ${topic || "unknown"}
+Subtopic: ${subtopic || "none"}
+Mode: ${mode}
+Student Name: ${name || "Student"}
+
+RECENT HISTORY:
+${historyLines || "(none)"}
+
+TASK:
+Produce a helpful ${
+    mode === "solve"
+      ? "step-by-step solution/explanation"
+      : "concise concept explanation"
+  } for:
+"${message}"
+
+OUTPUT FORMAT (plain text WhatsApp ready):
+- Core explanation / steps
+- Follow-up question (exactly one) OR short prompt for next input.
+Do NOT add section headings like "Solution:" — be natural.`.trim();
+
+  const userPrompt = message;
+
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+
   try {
-    const openai = getOpenAIClient();
+    const completion = await openai.chat.completions.create(
+      {
+        model: OPENAI_MODEL,
+        temperature: 0.6,
+        max_tokens: 450,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      },
+      { signal: controller.signal }
+    );
 
-    // Get Grade 11 Mathematics topics from CAPS curriculum
-    const mathsTopics = CAPS_SUBJECTS.core.Mathematics.topics[11] || [
-      "Functions",
-      "Number Patterns",
-      "Algebra",
-      "Geometry",
-      "Trigonometry",
-      "Statistics",
-      "Probability",
-    ];
+    clearTimeout(to);
 
-    // Build context for the AI with CAPS curriculum knowledge
-    const topicsContext = mathsTopics.join(", ");
-
-    // Truncate very long messages to prevent issues
-    const truncatedMessage =
-      student.message.length > 500
-        ? student.message.substring(0, 500) + "..."
-        : student.message;
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4",
-      temperature: 0.7,
-      max_tokens: 500,
-      messages: [
-        {
-          role: "system",
-          content: `You are a specialized Grade 11 Mathematics tutor for South African students following the CAPS curriculum.
-
-YOUR EXPERTISE:
-- Deep knowledge of Grade 11 CAPS Mathematics: ${topicsContext}
-- Step-by-step problem solving
-- Clear explanations of mathematical concepts
-- Exam preparation and practice questions
-
-STUDENT INFO:
-- Name: ${student.first_name}
-- Message: "${truncatedMessage}"
-
-FORMATTING GUIDELINES:
-- Use WhatsApp-friendly formatting with line breaks for readability
-- Bold important concepts by placing *asterisks* around them
-- For steps in a solution, use clear numbering (1., 2., 3.) with line breaks
-- Use emojis strategically to highlight key points:
-  • 📈 For functions
-  • 🔢 For algebra
-  • 📐 For trigonometry
-  • 📏 For geometry
-  • 📊 For statistics
-  • ✏️ For examples
-  • 💡 For tips
-  • ⚠️ For common mistakes
-  • ✅ For correct answers
-- Use bulleted lists (•) for multiple points or steps
-- For equations, use clear spacing and formatting
-
-RESPONSE GUIDELINES:
-- Be conversational and natural like a real tutor
-- Don't use greetings at the start of every message
-- If the student asks about a Grade 11 Maths topic, provide specific, accurate information
-- If they ask about a different subject or grade, politely explain you specialize in Grade 11 Maths only
-- When explaining mathematics, use clear, step-by-step approaches
-- If they ask which topics you can help with, list specific Grade 11 CAPS Mathematics topics
-- Remember previous context in the conversation
-- Make students feel supported and encouraged
-
-Respond as a knowledgeable, helpful Grade 11 Mathematics tutor would.`,
-        },
-        {
-          role: "user",
-          content: truncatedMessage,
-        },
-      ],
-      // Add timeout to prevent hanging
-      timeout: 15000,
-    });
-
-    const aiResponse = completion.choices[0].message.content;
-
-    // Determine appropriate quick replies based on message context
-    let quickReplies = [];
-    const lowerMessage = student.message.toLowerCase();
-
-    if (lowerMessage.includes("function")) {
-      quickReplies = [
-        { title: "📈 Quadratic Functions", payload: "g11_math_quadratic" },
-        { title: "📈 Exponential Functions", payload: "g11_math_exponential" },
-        {
-          title: "📈 Function Examples",
-          payload: "g11_math_function_examples",
-        },
-      ];
-    } else if (lowerMessage.includes("trig")) {
-      quickReplies = [
-        { title: "📐 Trig Identities", payload: "g11_math_trig_identities" },
-        { title: "📐 Sine & Cosine Rules", payload: "g11_math_sine_cosine" },
-        { title: "📐 Trig Examples", payload: "g11_math_trig_examples" },
-      ];
-    } else if (
-      lowerMessage.includes("algebra") ||
-      lowerMessage.includes("equation")
-    ) {
-      quickReplies = [
-        { title: "🔢 Exponents", payload: "g11_math_exponents" },
-        { title: "🔢 Solve Equations", payload: "g11_math_equations" },
-        { title: "🔢 Practice Problems", payload: "g11_math_algebra_practice" },
-      ];
-    } else if (lowerMessage.includes("exam") || lowerMessage.includes("test")) {
-      quickReplies = [
-        { title: "📝 Practice Test", payload: "g11_math_practice_test" },
-        { title: "📝 Exam Tips", payload: "g11_math_exam_tips" },
-        { title: "📝 Common Mistakes", payload: "g11_math_common_mistakes" },
-      ];
-    } else {
-      quickReplies = [
-        { title: "📈 Functions", payload: "g11_math_functions" },
-        { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
-        { title: "🔢 Algebra", payload: "g11_math_algebra" },
-      ];
-    }
-
+    const core = (completion.choices[0].message.content || "").trim();
+    return { core };
+  } catch (e) {
+    clearTimeout(to);
+    console.error("⚠️ OpenAI fallback:", e.message);
+    // Fallback minimal response
     return {
-      message: aiResponse,
-      quick_replies: quickReplies,
-    };
-  } catch (error) {
-    console.error("❌ Grade 11 Maths Tutor error:", error);
-    // Improved error response with more helpful message
-    return {
-      message: `I'm having a brief technical issue. Let's try again with a specific Grade 11 Mathematics question or topic you'd like to learn about.`,
-      quick_replies: [
-        { title: "📈 Functions", payload: "g11_math_functions" },
-        { title: "📐 Trigonometry", payload: "g11_math_trigonometry" },
-        { title: "🔢 Algebra", payload: "g11_math_algebra" },
-      ],
+      core: fallbackFor(topic, subtopic, mode),
     };
   }
+}
+
+// --- Fallback explanation templates ---
+function fallbackFor(topic, subtopic, mode) {
+  if (mode === "solve") {
+    return "Let's solve this step-by-step, but I'm having a brief technical issue. Please restate the exact expression or equation so I can guide you.";
+  }
+  if (topic === "algebra") {
+    return "*Algebra* 🔢 involves manipulating symbols & expressions. Specify: exponents, factoring, equations, inequalities or fractions?";
+  }
+  return "Please provide a specific Grade 11 Maths topic (Algebra / Functions / Trig / Geometry / Statistics) or your exact question.";
+}
+
+// --- Helpers ---
+function prettyTopic(t) {
+  return (
+    {
+      algebra: "Algebra",
+      functions: "Functions",
+      trigonometry: "Trigonometry",
+      geometry: "Geometry",
+      statistics: "Statistics",
+      probability: "Probability",
+      number_patterns: "Number Patterns",
+    }[t] || capitalize(t || "")
+  );
+}
+
+function capitalize(str) {
+  if (!str) return "";
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+function firstWord(linesJoined) {
+  const firstLine = linesJoined.split("\n")[0];
+  return firstLine.replace(/^[•\-\*\s]+/, "").split(/\s+/)[0];
+}
+
+function formatBullet(text) {
+  return "• " + capitalize(text);
+}
+
+function truncate(str, n) {
+  return str.length > n ? str.slice(0, n - 3) + "..." : str;
 }
 
 // Export for Vercel
