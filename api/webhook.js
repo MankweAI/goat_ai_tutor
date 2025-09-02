@@ -1,8 +1,8 @@
-// api/webhook.js
-// ManyChat webhook: now fully AI-powered with proper echo handling
-// Copy this entire file exactly.
+// api/webhook.js - ManyChat Webhook Handler for Grade 11 Maths
+// Copy this entire file to replace your current version
 
 const { getOpenAIClient } = require("../lib/config/openai");
+const { CAPS_SUBJECTS } = require("../lib/caps-knowledge");
 
 module.exports = async (req, res) => {
   // CORS
@@ -14,24 +14,8 @@ module.exports = async (req, res) => {
   try {
     if (req.method === "GET") {
       return res.status(200).json({
-        endpoint: "ManyChat Webhook",
-        expects:
-          "POST with subscriber data. 'echo' optional (auto-generated if missing).",
-        response_format: {
-          echo: "string",
-          version: "v2",
-          content: {
-            messages: [{ type: "text", text: "..." }],
-            quick_replies: [],
-          },
-        },
-        example_request_body: {
-          subscriber_id: "123456",
-          first_name: "Sarah",
-          last_name: "Student",
-          text: "Hi I need help with my Grade 10 math homework",
-          // echo: "(OPTIONAL) if you want to supply your own correlation id"
-        },
+        endpoint: "Grade 11 Maths AI Tutor",
+        description: "Specialized in South African CAPS Grade 11 Mathematics",
       });
     }
 
@@ -53,7 +37,6 @@ module.exports = async (req, res) => {
     };
 
     // Auto-generate echo if missing
-    // Format: auto_<timestamp>_<subscriber_id>
     let echo = data.echo;
     if (!echo) {
       echo = `auto_${Date.now()}_${student.subscriber_id}`;
@@ -62,33 +45,52 @@ module.exports = async (req, res) => {
     console.log(`📨 Processing for student: ${student.full_name}`);
     console.log(`💬 Message: "${student.message}"`);
 
-    // Use real AI for intent detection
-    const intent = await detectIntentWithAI(student.message);
+    // Special handling for "Hi" messages - FIXED RESPONSE
+    if (
+      student.message.trim().toLowerCase() === "hi" ||
+      student.message.trim().toLowerCase() === "hello" ||
+      student.message.trim().toLowerCase() === "hey"
+    ) {
+      const welcomeMessage = `Welcome to your Grade 11 Mathematics AI Tutor! 📚
 
-    // Get AI-generated response instead of template
-    const agentResponse = await getAIAgentResponse(intent, student);
+I can help you with:
+• Solving algebra problems step-by-step
+• Explaining functions and number patterns
+• Working through trigonometry questions
+• Clarifying geometry concepts
+• Preparing for assessments
+
+Simply send me your Grade 11 Maths question or topic you need help with!`;
+
+      return res.status(200).json({
+        echo: echo,
+        version: "v2",
+        content: {
+          messages: [{ type: "text", text: welcomeMessage }],
+          quick_replies: [
+            { title: "Functions", payload: "g11_math_functions" },
+            { title: "Trigonometry", payload: "g11_math_trig" },
+            { title: "Algebra", payload: "g11_math_algebra" },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // For all other messages, use the Grade 11 Maths AI Tutor
+    const tutorResponse = await getGrade11MathsTutorResponse(student);
 
     const response = {
       echo,
       version: "v2",
       content: {
-        messages: [
-          {
-            type: "text",
-            text: agentResponse.message_text,
-          },
-        ],
-        quick_replies: agentResponse.quick_replies || [],
+        messages: [{ type: "text", text: tutorResponse.message }],
+        quick_replies: tutorResponse.quick_replies || [],
       },
-      debug_info: {
-        intent: intent.category,
-        agent: agentResponse.agent,
-        generated_echo: !data.echo,
-        timestamp: new Date().toISOString(),
-      },
+      timestamp: new Date().toISOString(),
     };
 
-    console.log(`📤 AI ${agentResponse.agent} agent response sent`);
+    console.log(`📤 Grade 11 Maths AI Tutor Response Sent`);
     return res.status(200).json(response);
   } catch (err) {
     console.error("Webhook error:", err);
@@ -99,7 +101,7 @@ module.exports = async (req, res) => {
         messages: [
           {
             type: "text",
-            text: "Sorry, something went wrong. Please try again.",
+            text: "Sorry, I'm having trouble processing your request right now. Please try again.",
           },
         ],
       },
@@ -108,200 +110,110 @@ module.exports = async (req, res) => {
   }
 };
 
-// -------- AI Agent Functions --------
-
-// Real AI intent detection
-async function detectIntentWithAI(message = "") {
+// GRADE 11 MATHS TUTOR RESPONSE
+async function getGrade11MathsTutorResponse(student) {
   try {
     const openai = getOpenAIClient();
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      temperature: 0.3,
-      max_tokens: 100,
-      messages: [
-        {
-          role: "system",
-          content: `You are an AI education specialist analyzing a student message for intent.
-          
-Response format (JSON):
-{
-  "category": "homework_help|practice_questions|past_papers|greeting|general_query",
-  "agent": "homework|practice|papers|conversation",
-  "confidence": 0.1-1.0
-}
+    // Get Grade 11 Mathematics topics from CAPS curriculum
+    const mathsTopics = CAPS_SUBJECTS.core.Mathematics.topics[11] || [
+      "Functions",
+      "Number Patterns",
+      "Algebra",
+      "Geometry",
+      "Trigonometry",
+      "Statistics",
+      "Probability",
+    ];
 
-Analyze this WhatsApp message for educational needs.`,
-        },
-        {
-          role: "user",
-          content: `Student message: "${message}"`,
-        },
-      ],
-    });
+    // Build context for the AI with CAPS curriculum knowledge
+    const topicsContext = mathsTopics.join(", ");
 
-    // Parse AI response
-    return JSON.parse(completion.choices[0].message.content);
-  } catch (error) {
-    console.error("AI intent detection error:", error);
-
-    // Fallback to basic detection if AI fails
-    const m = message.toLowerCase();
-    if (m.includes("homework") || m.includes("help"))
-      return { category: "homework_help", agent: "homework", confidence: 0.8 };
-    if (m.includes("practice") || m.includes("questions"))
-      return {
-        category: "practice_questions",
-        agent: "practice",
-        confidence: 0.8,
-      };
-    if (m.includes("past") || m.includes("paper") || m.includes("exam"))
-      return { category: "past_papers", agent: "papers", confidence: 0.8 };
-    if (m.includes("hi") || m.includes("hello") || m.includes("hey"))
-      return { category: "greeting", agent: "conversation", confidence: 0.8 };
-    return {
-      category: "general_query",
-      agent: "conversation",
-      confidence: 0.6,
-    };
-  }
-}
-
-// Real AI agent response generation
-async function getAIAgentResponse(intent, student) {
-  try {
-    const openai = getOpenAIClient();
-
-    // Determine which AI agent to use
-    let systemPrompt;
-    const agentType = intent.agent;
-
-    // Different specialized agent prompts
-    switch (agentType) {
-      case "homework":
-        systemPrompt = `You are a Homework Help AI Agent for a WhatsApp CAPS curriculum tutor. 
-You specialize in helping South African students solve homework problems step-by-step.
-
-Student info:
-- Name: ${student.first_name}
-- Message: "${student.message}"
-
-Your response should:
-- Be friendly and encouraging
-- Use natural WhatsApp style (brief, with appropriate emojis)
-- Ask for specific details about their homework problem if needed
-- Focus on educational guidance rather than just giving answers
-- Be appropriate for WhatsApp chat format`;
-        break;
-
-      case "practice":
-        systemPrompt = `You are a Practice Questions AI Agent for a WhatsApp CAPS curriculum tutor.
-You specialize in generating practice questions aligned with South African curriculum.
-
-Student info:
-- Name: ${student.first_name}
-- Message: "${student.message}"
-
-Your response should:
-- Be friendly and encouraging
-- Use natural WhatsApp style (brief, with appropriate emojis)
-- Ask what subject and grade level they want to practice
-- Focus on educational value and curriculum alignment
-- Be appropriate for WhatsApp chat format`;
-        break;
-
-      case "papers":
-        systemPrompt = `You are a Past Papers AI Agent for a WhatsApp CAPS curriculum tutor.
-You specialize in helping South African students with exam preparation and past papers.
-
-Student info:
-- Name: ${student.first_name}
-- Message: "${student.message}"
-
-Your response should:
-- Be friendly and encouraging
-- Use natural WhatsApp style (brief, with appropriate emojis)
-- Ask which subject and grade they need papers for
-- Focus on exam preparation strategies
-- Be appropriate for WhatsApp chat format`;
-        break;
-
-      case "conversation":
-      default:
-        systemPrompt = `You are a Conversation Manager AI Agent for a WhatsApp CAPS curriculum tutor.
-You specialize in guiding conversations and routing students to specialized educational agents.
-
-Student info:
-- Name: ${student.first_name}
-- Message: "${student.message}"
-
-Your response should:
-- Be warm, friendly and welcoming
-- Use natural WhatsApp style (brief, with appropriate emojis)
-- Explain your capabilities (homework help, practice questions, past papers)
-- Ask what specific help they need
-- Be appropriate for WhatsApp chat format`;
-        break;
-    }
-
-    // Generate AI response
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
       temperature: 0.7,
-      max_tokens: 300,
+      max_tokens: 500,
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: student.message },
+        {
+          role: "system",
+          content: `You are a specialized Grade 11 Mathematics tutor for South African students following the CAPS curriculum.
+
+YOUR EXPERTISE:
+- Deep knowledge of Grade 11 CAPS Mathematics: ${topicsContext}
+- Step-by-step problem solving
+- Clear explanations of mathematical concepts
+- Exam preparation and practice questions
+
+STUDENT INFO:
+- Name: ${student.first_name}
+- Message: "${student.message}"
+
+RESPONSE GUIDELINES:
+- Be conversational and natural like a real tutor
+- Don't use greetings at the start of every message
+- Use minimal emojis (1-2 maximum)
+- If the student asks about a Grade 11 Maths topic, provide specific, accurate information
+- If they ask about a different subject or grade, politely explain you specialize in Grade 11 Maths only
+- When explaining mathematics, use clear, step-by-step approaches
+- If they ask which topics you can help with, list specific Grade 11 CAPS Mathematics topics
+- Remember previous context in the conversation
+- Make students feel supported and encouraged
+
+Respond as a knowledgeable, helpful Grade 11 Mathematics tutor would.`,
+        },
+        {
+          role: "user",
+          content: student.message,
+        },
       ],
     });
 
-    const aiResponseText = completion.choices[0].message.content;
+    const aiResponse = completion.choices[0].message.content;
 
-    // Generate appropriate quick replies based on agent type
+    // Determine appropriate quick replies based on message context
     let quickReplies = [];
 
-    if (agentType === "homework") {
+    // Check for topic mentions to provide relevant quick replies
+    const lowerMessage = student.message.toLowerCase();
+
+    if (lowerMessage.includes("function")) {
       quickReplies = [
-        { title: "📐 Mathematics", payload: "subject_mathematics" },
-        { title: "🔬 Physical Science", payload: "subject_science" },
-        { title: "📖 English", payload: "subject_english" },
+        { title: "Quadratic Functions", payload: "g11_math_quadratic" },
+        { title: "Exponential Functions", payload: "g11_math_exponential" },
+        { title: "Hyperbolic Functions", payload: "g11_math_hyperbolic" },
       ];
-    } else if (agentType === "practice") {
+    } else if (lowerMessage.includes("trig")) {
       quickReplies = [
-        { title: "Grade 8-9", payload: "grade_junior" },
-        { title: "Grade 10-11", payload: "grade_senior" },
-        { title: "Grade 12", payload: "grade_matric" },
+        { title: "Trig Identities", payload: "g11_math_trig_identities" },
+        { title: "Sine Rule", payload: "g11_math_sine_rule" },
+        { title: "Cosine Rule", payload: "g11_math_cosine_rule" },
       ];
-    } else if (agentType === "papers") {
+    } else if (lowerMessage.includes("algebra")) {
       quickReplies = [
-        { title: "📐 Math Papers", payload: "papers_math" },
-        { title: "🔬 Science Papers", payload: "papers_science" },
-        { title: "📖 English Papers", payload: "papers_english" },
+        { title: "Exponents", payload: "g11_math_exponents" },
+        { title: "Equations", payload: "g11_math_equations" },
+        { title: "Inequalities", payload: "g11_math_inequalities" },
       ];
     } else {
       quickReplies = [
-        { title: "📚 Homework Help", payload: "homework_help" },
-        { title: "📝 Practice", payload: "practice_questions" },
-        { title: "📄 Past Papers", payload: "past_papers" },
+        { title: "Functions", payload: "g11_math_functions" },
+        { title: "Trigonometry", payload: "g11_math_trigonometry" },
+        { title: "Need Example", payload: "g11_math_example" },
       ];
     }
 
     return {
-      agent: agentType,
-      message_text: aiResponseText,
+      message: aiResponse,
       quick_replies: quickReplies,
     };
   } catch (error) {
-    console.error("AI agent response error:", error);
-
-    // Fallback response if AI fails
+    console.error("❌ Grade 11 Maths Tutor error:", error);
     return {
-      agent: intent.agent || "conversation",
-      message_text: `Hi ${student.first_name}! I can help with your studies. What subject are you working on?`,
+      message: `I'm having a technical issue right now. Can you please rephrase your Grade 11 Mathematics question?`,
       quick_replies: [
-        { title: "📚 Homework Help", payload: "homework_help" },
-        { title: "📝 Practice", payload: "practice_questions" },
-        { title: "📄 Past Papers", payload: "past_papers" },
+        { title: "Functions Help", payload: "g11_math_functions" },
+        { title: "Trigonometry Help", payload: "g11_math_trigonometry" },
+        { title: "Show Topics", payload: "g11_math_topics" },
       ],
     };
   }
