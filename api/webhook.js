@@ -9,7 +9,6 @@
 
 const {
   buildPracticePack,
-  buildConceptPack,
   buildHomeworkScaffold,
   buildExamPrepPack,
   nextDifficulty,
@@ -21,6 +20,12 @@ const {
   generateExamDiagnosticAI,
   generatePracticePackAI,
 } = require("../lib/ai-content");
+
+const {
+  generateConceptExplanationAI,
+  generateHomeworkScaffoldAI,
+  generateExamPrepPackAI,
+} = require("../lib/ai-generators");
 
 // In-memory sessions (simple – NOT persistent across cold starts)
 const sessions = new Map();
@@ -219,11 +224,15 @@ module.exports = async (req, res) => {
     // Topic switch mid flow
     if (topicSwitch) {
       const newTopic = topicSwitch;
-      if (wantsExplanation && session.last_help_type !== "concept_pack") {
-        const conceptPack = buildConceptPack(newTopic);
-        applyPackToSession(session, conceptPack, newTopic);
-        return send(res, echo, appendGradeNudge(session, conceptPack.text));
-      }
+if (wantsExplanation && session.last_help_type !== "concept_pack") {
+  const conceptPack = await generateConceptExplanationAI({
+    subject: "Mathematics",
+    grade: session.grade_detected || "11",
+    topic: newTopic,
+  });
+  applyPackToSession(session, conceptPack, newTopic);
+  return send(res, echo, appendGradeNudge(session, conceptPack.text));
+}
       if (
         session.last_help_type === "practice_pack" ||
         wantsPractice ||
@@ -241,11 +250,16 @@ const practicePack = await generatePracticePackAI({
         applyPracticePack(session, practicePack);
         return send(res, echo, appendGradeNudge(session, practicePack.text));
       }
-      if (wantsHomework) {
-        const hw = buildHomeworkScaffold(message, newTopic);
-        applyPackToSession(session, hw, newTopic);
-        return send(res, echo, appendGradeNudge(session, hw.text));
-      }
+if (wantsHomework) {
+  const hw = await generateHomeworkScaffoldAI({
+    subject: "Mathematics",
+    grade: session.grade_detected || "11",
+    topic: newTopic,
+    question: message,
+  });
+  applyPackToSession(session, hw, newTopic);
+  return send(res, echo, appendGradeNudge(session, hw.text));
+}
       const concept = buildConceptPack(newTopic);
       applyPackToSession(session, concept, newTopic);
       return send(res, echo, appendGradeNudge(session, concept.text));
@@ -280,9 +294,13 @@ const practicePack = await generatePracticePackAI({
       wantsExplanation &&
       !topicSwitch
     ) {
-      const concept = buildConceptPack(session.practice.topic || "algebra");
-      applyPackToSession(session, concept, session.practice.topic || "algebra");
-      return send(res, echo, appendGradeNudge(session, concept.text));
+const concept = await generateConceptExplanationAI({
+  subject: "Mathematics",
+  grade: session.grade_detected || "11",
+  topic: session.practice.topic || "algebra",
+});
+applyPackToSession(session, concept, session.practice.topic || "algebra");
+return send(res, echo, appendGradeNudge(session, concept.text));
     }
 
     // Confusion / hint ladder during practice
@@ -506,9 +524,14 @@ const practicePack = await generatePracticePackAI({
     if (wantsHomework) {
       const topicGuess =
         guessTopic(lower) || session.practice.topic || "algebra";
-      const hw = buildHomeworkScaffold(message, topicGuess);
-      applyPackToSession(session, hw, topicGuess);
-      return send(res, echo, appendGradeNudge(session, hw.text));
+const hw = await generateHomeworkScaffoldAI({
+  subject: "Mathematics",
+  grade: session.grade_detected || "11",
+  topic: topicGuess,
+  question: message,
+});
+applyPackToSession(session, hw, topicGuess);
+return send(res, echo, appendGradeNudge(session, hw.text));
     }
 
     if (intentConfidence >= 0.8 && !session.help_sent) {
@@ -529,9 +552,14 @@ const practicePack = await generatePracticePackAI({
     // Exam prep
     if (wantsExam) {
       const topicGuess = guessTopic(lower) || "algebra";
-      const exam = buildExamPrepPack(topicGuess);
-      applyPackToSession(session, exam, topicGuess);
-      return send(res, echo, appendGradeNudge(session, exam.text));
+const exam = await generateExamPrepPackAI({
+  subject: "Mathematics",
+  grade: session.grade_detected || "11",
+  topic: topicGuess,
+  difficulty: session.practice.difficulty || "mixed",
+});
+applyPackToSession(session, exam, topicGuess);
+return send(res, echo, appendGradeNudge(session, exam.text));
     }
 
     if (intentConfidence >= 0.8 && !session.help_sent) {
@@ -543,9 +571,13 @@ const practicePack = await generatePracticePackAI({
     if (wantsExplanation) {
       const topicGuess =
         guessTopic(lower) || session.practice.topic || "algebra";
-      const concept = buildConceptPack(topicGuess);
-      applyPackToSession(session, concept, topicGuess);
-      return send(res, echo, appendGradeNudge(session, concept.text));
+const concept = await generateConceptExplanationAI({
+  subject: "Mathematics",
+  grade: session.grade_detected || "11",
+  topic: topicGuess,
+});
+applyPackToSession(session, concept, topicGuess);
+return send(res, echo, appendGradeNudge(session, concept.text));
     }
 
     // Bare topic mention (now: clarify goal first, do NOT drop full pack)
