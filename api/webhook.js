@@ -149,17 +149,6 @@ module.exports = async (req, res) => {
     const intentConfidence = computeIntentConfidence(lower);
     session.last_intent_confidence = intentConfidence;
 
-    // If message has grade + exam + practice but no subject/topic yet, set pending_exam_flow
-    if (
-      !session.help_sent &&
-      wantsExam &&
-      wantsPractice &&
-      /grade\s*(8|9|1[0-2])/.test(lower) &&
-      !guessTopic(lower)
-    ) {
-      session.pending_exam_flow = true;
-    }
-
     // Detect topic switch ANY time (stats, geometry, trig, algebra, functions)
     const topicSwitch = detectTopicSwitch(lower);
     const wantsExplanation = /(explain|concept|what is|definition)/.test(lower);
@@ -178,6 +167,16 @@ module.exports = async (req, res) => {
     const stillStuck = /\bstill stuck\b/.test(lower);
     const wantsSkip = /\bskip\b/.test(lower);
 
+    // Late insertion: set pending_exam_flow only AFTER intent flags exist
+    if (
+      !session.help_sent &&
+      wantsExam &&
+      wantsPractice &&
+      /grade\s*(8|9|1[0-2])/.test(lower) &&
+      !guessTopic(lower)
+    ) {
+      session.pending_exam_flow = true;
+    }
     // Equation-like direct solving
     if (/[=]/.test(message) || /\bsolve\b/i.test(message)) {
       const solved = await quickSolve(message);
