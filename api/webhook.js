@@ -16,8 +16,11 @@ const {
   normalizeTopic,
   initialDifficultyForGrade,
   gradeAwareNextDifficulty,
-  buildDiagnosticQuestion,
 } = require("../lib/assist-packs");
+const {
+  generateExamDiagnosticAI,
+  generatePracticePackAI,
+} = require("../lib/ai-content");
 
 // In-memory sessions (simple – NOT persistent across cold starts)
 const sessions = new Map();
@@ -46,6 +49,14 @@ function getSession(id) {
       pending_topic: null,
       pending_exam_flow: false,
       diagnostic: { active: false, completed: false },
+      exam_flow: {
+        active: false,
+        subject: null,
+        grade: null,
+        focus_topic: null,
+        mode: null,
+        stage: null,
+      },
     });
   }
   return sessions.get(id);
@@ -221,12 +232,12 @@ module.exports = async (req, res) => {
         session.practice.topic = newTopic;
         session.practice.difficulty = "easy";
         session.practice.used_question_ids = [];
-        const practicePack = buildPracticePack(
-          newTopic,
-          null,
-          [],
-          session.grade_detected
-        );
+const practicePack = await generatePracticePackAI({
+  grade: session.grade_detected,
+  subject: "Mathematics",
+  topic: session.practice.topic,
+  baseDifficulty: session.practice.difficulty,
+});
         applyPracticePack(session, practicePack);
         return send(res, echo, appendGradeNudge(session, practicePack.text));
       }
@@ -252,12 +263,12 @@ module.exports = async (req, res) => {
         currentDiff
       );
       session.practice.difficulty = nextDiff;
-      const practicePack = buildPracticePack(
-        session.practice.topic || "algebra",
-        session.practice.difficulty,
-        session.practice.used_question_ids,
-        session.grade_detected
-      );
+const practicePack = await generatePracticePackAI({
+  grade: session.grade_detected,
+  subject: "Mathematics",
+  topic: session.practice.topic,
+  baseDifficulty: session.practice.difficulty,
+});
       applyPracticePack(session, practicePack);
       return send(res, echo, appendGradeNudge(session, practicePack.text));
     }
@@ -325,12 +336,12 @@ module.exports = async (req, res) => {
         session.practice.topic = session.pending_topic || "algebra";
       }
       session.pending_topic = null;
-      const practicePack = buildPracticePack(
-        session.practice.topic,
-        session.practice.difficulty || null,
-        session.practice.used_question_ids,
-        session.grade_detected
-      );
+const practicePack = await generatePracticePackAI({
+  grade: session.grade_detected,
+  subject: "Mathematics",
+  topic: session.practice.topic,
+  baseDifficulty: session.practice.difficulty,
+});
       applyPracticePack(session, practicePack);
       return send(
         res,
@@ -367,10 +378,11 @@ module.exports = async (req, res) => {
         !session.diagnostic.completed &&
         !session.help_sent
       ) {
-        const diag = buildDiagnosticQuestion(
-          session.pending_topic,
-          session.grade_detected
-        );
+        const diag = await generateExamDiagnosticAI({
+          grade: session.grade_detected,
+          subject: "Mathematics", // Later: store actual subject if you capture it
+          topic: session.pending_topic,
+        });
         applyDiagnostic(session, diag);
         session.diagnostic.active = true;
         return send(res, echo, appendGradeNudge(session, diag.text));
@@ -425,12 +437,12 @@ module.exports = async (req, res) => {
         session.practice.used_question_ids = [];
       }
 
-      const practicePack = buildPracticePack(
-        session.practice.topic,
-        session.practice.difficulty || null,
-        session.practice.used_question_ids,
-        session.grade_detected
-      );
+const practicePack = await generatePracticePackAI({
+  grade: session.grade_detected,
+  subject: "Mathematics",
+  topic: session.practice.topic,
+  baseDifficulty: session.practice.difficulty,
+});
       applyPracticePack(session, practicePack);
       return send(res, echo, appendGradeNudge(session, practicePack.text));
     }
@@ -465,7 +477,11 @@ module.exports = async (req, res) => {
         session.pending_topic ||
         guessTopic(lower) ||
         "algebra";
-      const diag = buildDiagnosticQuestion(diagTopic, session.grade_detected);
+      const diag = await generateExamDiagnosticAI({
+        grade: session.grade_detected,
+        subject: "Mathematics", // Later: store actual subject if you capture it
+        topic: session.pending_topic,
+      });
       applyDiagnostic(session, diag);
       session.diagnostic.active = true;
       return send(res, echo, appendGradeNudge(session, diag.text));
@@ -634,6 +650,54 @@ function appendGradeNudge(session, text) {
 }
 
 
+async function classifyMessageWithAI(message) {
+  try {
+    const { getOpenAIClient } = require("../lib/config/openai");
+    const client = getOpenAIClient();
+    const systemPrompt = `
+You classify short WhatsApp student messages (South African CAPS).
+Return STRICT JSON ONLY (no prose) with keys:
+goal_type: homework_help|practice_questions|exam_preparation|past_papers|concept_explanation|greeting|unknown
+subject: canonical subject or "unknown"
+grade: 8|9|10|11|12|unknown
+topic_guess: one word topic (algebra|trigonometry|functions|statistics|geometry|probability|patterns|finance|calculus|series|none)
+needs_clarification: true|false
+confidence: 0.0-1.0
+reason: brief 1-line reason
+
+If user only provides grade+subject but no explicit goal, infer probable goal_type = exam_preparation ONLY if prior exam context likely else unknown.
+If message includes 'exam practice', 'past paper', 'revision', classify accordingly.
+If ambiguous single word topic (e.g. 'Trigonometry'), set goal_type=unknown, needs_clarification=true.
+topic_guess = "none" if not confidently identified.`;
+    const userPrompt = `Message: "${message}"\nReturn JSON now:`;
+    const completion = await client.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      temperature: 0.2,
+      max_tokens: 180,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    const raw = completion.choices[0].message.content.trim();
+    const jsonStart = raw.indexOf("{");
+    const jsonEnd = raw.lastIndexOf("}");
+    if (jsonStart === -1 || jsonEnd === -1) throw new Error("Bad JSON");
+    return JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+  } catch (e) {
+    console.warn("Classifier fallback:", e.message);
+    return {
+      goal_type: "unknown",
+      subject: "unknown",
+      grade: "unknown",
+      topic_guess: "none",
+      needs_clarification: true,
+      confidence: 0.4,
+      reason: "fallback",
+    };
+  }
+}
+
 function computeIntentConfidence(lower) {
   let score = 0;
 
@@ -743,6 +807,12 @@ function applyPackToSession(session, pack, topic) {
   session.expectation = pack.expectation;
   if (topic) session.practice.topic = normalizeTopic(topic);
 }
+
+console.log("AI PACK GENERATED", {
+  fallback: !!practicePack.fallback,
+  topic: practicePack.topic,
+  difficulty: practicePack.difficulty,
+});
 
 async function quickSolve(raw) {
   const cleaned = raw.replace(/\s+/g, "");
