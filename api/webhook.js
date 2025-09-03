@@ -286,15 +286,15 @@ const practicePack = await generatePracticePackAI({
     }
 
     // Confusion / hint ladder during practice
-    if (
-      (session.last_help_type === "practice_pack" ||
-        session.last_help_type === "diagnostic_question") &&
-      session.expectation === "awaiting_answers" &&
-      (expressesConfusion || stillStuck || wantsSimpler || lower === "hint")
-    ) {
-      const hintText = buildProgressiveHint(session);
-      return send(res, echo, hintText);
-    }
+if (
+  (session.last_help_type === "practice_pack" ||
+    session.last_help_type === "diagnostic_question") &&
+  session.expectation === "awaiting_answers" &&
+  (expressesConfusion || stillStuck || wantsSimpler || lower === "hint")
+) {
+  const hintText = await buildProgressiveHint(session, lower);
+  return send(res, echo, hintText);
+}
     // User attempts answers
     if (
       session.last_help_type === "practice_pack" &&
@@ -807,12 +807,6 @@ function applyPackToSession(session, pack, topic) {
   session.expectation = pack.expectation;
   if (topic) session.practice.topic = normalizeTopic(topic);
 }
-
-console.log("AI PACK GENERATED", {
-  fallback: !!practicePack.fallback,
-  topic: practicePack.topic,
-  difficulty: practicePack.difficulty,
-});
 
 async function quickSolve(raw) {
   const cleaned = raw.replace(/\s+/g, "");
