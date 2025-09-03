@@ -44,6 +44,7 @@ function getSession(id) {
       grade_nudge_sent: false,
       last_intent_confidence: 0,
       pending_topic: null,
+      pending_exam_flow: false,
       diagnostic: { active: false, completed: false },
     });
   }
@@ -147,6 +148,17 @@ module.exports = async (req, res) => {
     const lower = message.toLowerCase();
     const intentConfidence = computeIntentConfidence(lower);
     session.last_intent_confidence = intentConfidence;
+
+    // If message has grade + exam + practice but no subject/topic yet, set pending_exam_flow
+    if (
+      !session.help_sent &&
+      wantsExam &&
+      wantsPractice &&
+      /grade\s*(8|9|1[0-2])/.test(lower) &&
+      !guessTopic(lower)
+    ) {
+      session.pending_exam_flow = true;
+    }
 
     // Detect topic switch ANY time (stats, geometry, trig, algebra, functions)
     const topicSwitch = detectTopicSwitch(lower);
@@ -328,6 +340,25 @@ module.exports = async (req, res) => {
       );
     }
 
+    // --- Combined "exam practice" intercept (no topic yet) ---
+    const combinedExamPractice =
+      wantsExam && wantsPractice && !topicSwitch && !guessTopic(lower);
+
+    if (
+      !session.help_sent &&
+      combinedExamPractice &&
+      !session.pending_exam_flow &&
+      !session.practice.topic &&
+      !session.pending_topic
+    ) {
+      session.pending_exam_flow = true;
+      return send(
+        res,
+        echo,
+        "Exam practice noted ✅\nWhich subject and Grade? (e.g. 'Grade 11 Mathematics' or 'Grade 12 Physical Sciences').\nYou can also say 'past paper' if you want real paper style."
+      );
+    }
+
     // Practice request
     if (wantsPractice) {
       // If user previously gave a bare topic and we have not run a diagnostic yet:
@@ -361,8 +392,30 @@ module.exports = async (req, res) => {
       }
 
       if (!session.practice.topic) {
-        // If still no topic (user said "practice" without earlier topic), guess or default
-        session.practice.topic = guessTopic(lower) || "algebra";
+        const guessed = guessTopic(lower);
+        if (guessed) {
+          session.practice.topic = guessed;
+          // If we were in an exam flow, keep that context but now we can produce a diagnostic or full pack
+          if (
+            session.pending_exam_flow &&
+            !session.diagnostic.active &&
+            !session.diagnostic.completed &&
+            !session.help_sent
+          ) {
+            // OPTIONAL: You could insert a special exam diagnostic here later.
+          }
+          session.pending_exam_flow = false; // subject resolved
+        } else {
+          // Still nothing: if exam flow, re-ask; else fallback to default logic
+          if (session.pending_exam_flow) {
+            return send(
+              res,
+              echo,
+              "Specify subject + Grade to start exam practice (e.g. 'Grade 10 Maths')."
+            );
+          }
+          session.practice.topic = "algebra"; // fallback
+        }
       }
 
       if (session.last_help_type !== "practice_pack") {
@@ -381,6 +434,20 @@ module.exports = async (req, res) => {
       );
       applyPracticePack(session, practicePack);
       return send(res, echo, appendGradeNudge(session, practicePack.text));
+    }
+
+    // If exam flow pending but no subject/topic yet, ask again (prevents defaulting to algebra)
+    if (
+      session.pending_exam_flow &&
+      !session.practice.topic &&
+      !guessTopic(lower) &&
+      !/math|algebra|trig|function|geometry|stat|prob/i.test(lower)
+    ) {
+      return send(
+        res,
+        echo,
+        "Just need the subject + Grade for exam practice (e.g. 'Grade 11 Maths' or 'Grade 12 Physical Sciences')."
+      );
     }
 
     // High confidence fast-path: go straight to diagnostic if not done and no help yet
@@ -429,20 +496,20 @@ module.exports = async (req, res) => {
       return send(res, echo, appendGradeNudge(session, hw.text));
     }
 
-      if (intentConfidence >= 0.8 && !session.help_sent) {
-        // If no specific question yet, prompt sharper
-        if (
-          !/[=]/.test(message) &&
-          !/\d/.test(message) &&
-          message.split(/\s+/).length < 6
-        ) {
-          return send(
-            res,
-            echo,
-            "Send or paste the homework question (or describe it). I’ll guide step-by-step."
-          );
-        }
+    if (intentConfidence >= 0.8 && !session.help_sent) {
+      // If no specific question yet, prompt sharper
+      if (
+        !/[=]/.test(message) &&
+        !/\d/.test(message) &&
+        message.split(/\s+/).length < 6
+      ) {
+        return send(
+          res,
+          echo,
+          "Send or paste the homework question (or describe it). I’ll guide step-by-step."
+        );
       }
+    }
 
     // Exam prep
     if (wantsExam) {
@@ -452,10 +519,10 @@ module.exports = async (req, res) => {
       return send(res, echo, appendGradeNudge(session, exam.text));
     }
 
-      if (intentConfidence >= 0.8 && !session.help_sent) {
-        // High confidence exam ask: add immediate quick orientation
-        // (No extra state needed here)
-      }
+    if (intentConfidence >= 0.8 && !session.help_sent) {
+      // High confidence exam ask: add immediate quick orientation
+      // (No extra state needed here)
+    }
 
     // Concept request
     if (wantsExplanation) {
