@@ -154,8 +154,32 @@ module.exports = async (req, res) => {
       `🧠 Brain processing message, handoff needed: ${handoffNeeded.handoff_needed}`
     );
 
+    const enhancedContext = {
+      user_id: userId,
+      user_name: firstName,
+      message: message,
+      image_url: imageUrl,
+      image_data: processedImage,
+      session_state: {
+        ...session,
+        message_history: session.message_history?.slice(-5) || [], // Add recent history
+        current_intent: handoffNeeded.handoff_needed
+          ? handoffNeeded.reason
+          : null,
+      },
+      platform: "whatsapp",
+      handoff_needed: handoffNeeded.handoff_needed,
+      target_agent: handoffNeeded.handoff_needed
+        ? handoffNeeded.target_agent
+        : null,
+      timestamp: new Date().toISOString(),
+    };
+
     // Process with Brain Agent
-    const agentResponse = await brainAgent.processMessage(userId, context);
+    const agentResponse = await brainAgent.processMessage(
+      userId,
+      enhancedContext
+    );
 
     // Update session with agent response
     await updateSession(userId, {
